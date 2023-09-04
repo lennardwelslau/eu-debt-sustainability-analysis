@@ -1,23 +1,17 @@
 #=========================================================================================#
 #          Economic and Debt Sustainability Model (EcDsaModel) - Stochastic SubClass      #
 #=========================================================================================#
-# This Python file defines a stochastic model subclass named "EcStochasticModel" which is built upon the base class "EcDsaModel".
-# The subclass is designed to simulate a stochastic debt sustainability analysis (DSA) model, incorporating randomness and uncertainty in the model's inputs.
-# The model takes into account various economic shocks and their impacts on key macroeconomic variables, such as exchange rates, interest rates, GDP growth,
-# and primary balances. The simulation results provide insights into the potential variability of the debt-to-GDP ratio over time.
+# This Python file defines a stochastic model subclass named "EcStochasticModel" which is 
+# built upon the base class "EcDsaModel". The subclass is designed to simulate a stochastic 
+# debt sustainability analysis (DSA) model, incorporating randomness and uncertainty in the 
+# model's inputs. The model takes into account various economic shocks and their impacts on 
+# exchange rates, interest rates, GDP growth, and primary balances. 
 #
-# The simulation process involves drawing quarterly shocks from a multivariate normal distribution, aggregating these shocks into annual shocks,
-# combining the shocks with baseline variables, and simulating the debt-to-GDP ratio using a specific formula. The subclass also provides methods to plot
-# fan charts showing the distribution of simulated debt-to-GDP ratios, calculate the probability of the debt ratio exploding, and perform stochastic optimization
-# to find the structural primary balance that ensures a specified probability of the debt ratio exploding.
-#
-# The code uses various libraries such as NumPy, pandas, matplotlib, seaborn, scipy, and numba for efficient numerical computations and visualization.
-#
-# To use the "EcStochasticModel" subclass, create an instance with appropriate parameters like the ISO country code, start year, adjustment period,
-# and adjustment start year. You can then call methods like "simulate" to perform simulations, "fanchart" to plot fan charts, "prob_debt_explodes" to
-# calculate the probability of the debt exploding, "find_spb_stochastic" to optimize the structural primary balance based on a specified probability target,
-# "find_spb_deficit" to find the binding SPB scenario after deficit has been brought below 3%, or "find_deficit_prob" to find the probability of an excessive
-# deficit during the adjustment period.
+# The model includes methods like "simulate" to perform simulations, "fanchart" to plot charts,
+# "prob_debt_explodes" to # calculate the probability of the debt exploding, "find_spb_stochastic" 
+# to optimize the structural primary balance based on a specified probability target, 
+# "find_spb_deficit" to find the binding SPB scenario after deficit has been brought below 3%, 
+# or "find_deficit_prob" to find the probability of an excessive deficit during the adjustment period.
 #
 # For comments and suggestions please contact lennard.welslau[at]bruegel[dot]org
 #
@@ -51,14 +45,6 @@ class EcStochasticModel(EcDsaModel):
                 adjustment_start=2025 # start year of linear spb_bcoa adjustment
                 ):
         super().__init__(country, start_year, end_year, adjustment_period, adjustment_start)
-        
-        # Set option for nfpc
-        if adjustment_period == 'nfpc':
-            self.nfpc = True
-            adjustment_period = 4
-            adjustment_start = 2025
-        else:
-            self.nfpc = False
         
         self.outlier_threshold = 3
         start_year_stochastic = adjustment_start - 1 + adjustment_period

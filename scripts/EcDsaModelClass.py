@@ -47,14 +47,6 @@ class EcDsaModel:
                  adjustment_start=2025, # start year of linear spb_bcoa adjustment
                  ):
 
-        # option for no-fiscal-policy-change scenario
-        if adjustment_period == 'nfpc':
-            self.nfpc = True
-            adjustment_period = 4
-            adjustment_start = 2025
-        else:
-            self.nfpc = False
-
         ## Initialize model parameters
         self.country = country
         self.start_year = start_year
