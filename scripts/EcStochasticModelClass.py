@@ -1,25 +1,22 @@
 #=========================================================================================#
-#          Economic and Debt Sustainability Model (EcDsaModel) - Stochastic SubClass      #
+#          European Commission Debt Sustainability Analysis - Stochastic SubClass         #
 #=========================================================================================#
-# This Python file defines a stochastic model subclass named "EcStochasticModel" which is 
+# This Python file defines the stochastic model subclass named "EcStochasticModel" which is 
 # built upon the base class "EcDsaModel". The subclass is designed to simulate a stochastic 
 # debt sustainability analysis (DSA) model, incorporating randomness and uncertainty in the 
-# model's inputs. The model takes into account various economic shocks and their impacts on 
-# exchange rates, interest rates, GDP growth, and primary balances. 
+# model's inputs. The model takes into account shocks to the exchange rates, interest rates, 
+# GDP growth, and the primary balances. 
 #
-# The model includes methods like "simulate" to perform simulations, "fanchart" to plot charts,
-# "prob_debt_explodes" to # calculate the probability of the debt exploding, "find_spb_stochastic" 
-# to optimize the structural primary balance based on a specified probability target, 
-# "find_spb_deficit" to find the binding SPB scenario after deficit has been brought below 3%, 
-# or "find_deficit_prob" to find the probability of an excessive deficit during the adjustment period.
-#
+# The model includes methods to perform simulations, plot fan charts, calculate the probability 
+# of debt exploding, and to optimize the structural primary balance, as well as additional 
+# optimizers for scenarios with non-linear adjustment.
+# 
 # For comments and suggestions please contact lennard.welslau[at]bruegel[dot]org
 #
 # Author: Lennard Welslau
-# Date: 31/08/2023
+# Date: 01/09/2023
 #
 #=========================================================================================#
-
 
 # Import libraries and modules
 import numpy as np
@@ -33,7 +30,6 @@ from numba import jit
 from EcDsaModelClass import EcDsaModel
 
 class EcStochasticModel(EcDsaModel):
-
     #----------------------------#
     #--- INIITIALIZE SUBCLASS ---# 
     #----------------------------#
@@ -54,9 +50,12 @@ class EcStochasticModel(EcDsaModel):
         self._get_shock_data()
 
     def _get_shock_data(self):
+        """
+        Get shock data from Excel file and adjust outliers.
+        """
 
         # Select country shock data and get number of variables
-        self.df_shocks = pd.read_excel('../data/InputData/shock_data.xlsx', sheet_name=self.country, index_col=0).T
+        self.df_shocks = pd.read_excel('../data/InputData/stochastic_model_data.xlsx', sheet_name=self.country, index_col=0).T
         self.num_variables = self.df_shocks.shape[1]
         
         # Adjust outliers defined by mean + outlier_threshold * standard deviation to the threshold
@@ -68,7 +67,7 @@ class EcStochasticModel(EcDsaModel):
     #--------------------------#
     #--- SIMULATION METHODS ---# 
     #--------------------------#     
-    def simulate(self, N=200000):
+    def simulate(self, N=1000000):
         """
         Simulate the stochastic model.
         """
@@ -167,7 +166,7 @@ class EcStochasticModel(EcDsaModel):
 
         # Create arrays to store the simulated variables
         d_sim = np.zeros([self.N, self.T_stochastic+1])  # Debt to GDP ratio
-        exr_sim = np.zeros([self.N, self.T_stochastic+1])  # Exchange rate
+        exr_eur_sim = np.zeros([self.N, self.T_stochastic+1])  # Exchange rate
         iir_sim = np.zeros([self.N, self.T_stochastic+1])  # Implicit interest rate
         ng_sim = np.zeros([self.N, self.T_stochastic+1])  # Nominal GDP growth
         pb_sim = np.zeros([self.N, self.T_stochastic+1])  # Primary balance 
@@ -175,14 +174,14 @@ class EcStochasticModel(EcDsaModel):
 
         # Call the Numba JIT function with converted self variables
         combine_shocks_baseline_jit(
-            N=self.N, T_stochastic=self.T_stochastic, shocks_sim=self.shocks_sim, exr=self.exr, 
-            iir=self.iir, ng=self.ng, pb=self.pb, sf=self.sf, d=self.d, d_sim=d_sim, exr_sim=exr_sim, 
+            N=self.N, T_stochastic=self.T_stochastic, shocks_sim=self.shocks_sim, exr_eur=self.exr_eur, 
+            iir=self.iir, ng=self.ng, pb=self.pb, sf=self.sf, d=self.d, d_sim=d_sim, exr_eur_sim=exr_eur_sim, 
             iir_sim=iir_sim, ng_sim=ng_sim, pb_sim=pb_sim, sf_sim=sf_sim
             )
 
         # Save the resulting self.variables
         self.d_sim = d_sim
-        self.exr_sim = exr_sim
+        self.exr_eur_sim = exr_eur_sim
         self.iir_sim = iir_sim
         self.ng_sim = ng_sim
         self.pb_sim = pb_sim
@@ -195,8 +194,8 @@ class EcStochasticModel(EcDsaModel):
 
         # Call the Numba JIT function with converted self variables and d_sim as an argument
         simulate_debt_jit(
-            N=self.N, T_stochastic=self.T_stochastic, share_eur=self.share_eur, d_sim=self.d_sim, iir_sim=self.iir_sim, 
-            ng_sim=self.ng_sim, exr_sim=self.exr_sim, pb_sim=self.pb_sim, sf_sim=self.sf_sim)
+            N=self.N, T_stochastic=self.T_stochastic, share_eur_stochastic=self.share_eur_stochastic, d_sim=self.d_sim, iir_sim=self.iir_sim, 
+            ng_sim=self.ng_sim, exr_eur_sim=self.exr_eur_sim, pb_sim=self.pb_sim, sf_sim=self.sf_sim)
 
 
     #-------------------------#
@@ -261,15 +260,16 @@ class EcStochasticModel(EcDsaModel):
         """
             
         self.print_update = print_update
-        if not hasattr(self, 'spb_deficit_period'):
-           self.spb_deficit_period = 0
+        if not hasattr(self, 'spb_initial_adjustment_period'):
+           self.spb_initial_adjustment_period = 0
+           self.spb_initial_adjustment_step = 0.5
 
         # Initial projection
-        self.project(scenario=None, spb_deficit_period=self.spb_deficit_period)
+        self.project(scenario=None, spb_initial_adjustment_period=self.spb_initial_adjustment_period, spb_initial_adjustment_step=self.spb_initial_adjustment_step)
 
         # If debt<60 and deficit<3, find spb_deterministic that ensures deficit remains <3
         if (
-            self.fb[self.adjustment_start - 1] >= -3
+            self.ob[self.adjustment_start - 1] >= -3
             ) and (
             self.d[self.adjustment_start - 1] <= 60
             ):
@@ -294,7 +294,7 @@ class EcStochasticModel(EcDsaModel):
             self.df_find_spb = pd.DataFrame(self.find_spb_dict, index=['prob_debt_explodes']).T.reset_index(names='spb_target')
             
             # Project with optimal spb
-            self.project(spb_target=self.spb_target, scenario=None, spb_deficit_period=self.spb_deficit_period)
+            self.project(spb_target=self.spb_target, scenario=None, spb_initial_adjustment_period=self.spb_initial_adjustment_period, spb_initial_adjustment_step=self.spb_initial_adjustment_step)
 
         # If debt > 60, optimize for debt decline
         elif self.d[self.adjustment_start - 1] > 60: 
@@ -314,7 +314,7 @@ class EcStochasticModel(EcDsaModel):
             self.df_find_spb = pd.DataFrame(self.find_spb_dict, index=['prob_debt_explodes']).T.reset_index(names='spb_target')
             
             # Project with optimal spb
-            self.project(spb_target=self.spb_target, scenario=None, spb_deficit_period=self.spb_deficit_period)
+            self.project(spb_target=self.spb_target, scenario=None, spb_initial_adjustment_period=self.spb_initial_adjustment_period, spb_initial_adjustment_step=self.spb_initial_adjustment_step)
 
         return self.spb_target
     
@@ -324,7 +324,7 @@ class EcStochasticModel(EcDsaModel):
         """
 
         # Simulate the debt-to-GDP ratio with the given primary balance target
-        self.project(spb_target=spb_target, scenario=None, spb_deficit_period=self.spb_deficit_period)
+        self.project(spb_target=spb_target, scenario=None, spb_initial_adjustment_period=self.spb_initial_adjustment_period, spb_initial_adjustment_step=self.spb_initial_adjustment_step)
 
         # Combine shocks with new baseline
         self._combine_shocks_baseline()
@@ -346,7 +346,7 @@ class EcStochasticModel(EcDsaModel):
         """
 
         # Simulate the debt-to-GDP ratio with the given primary balance target
-        self.project(spb_target=spb_target, scenario=None, spb_deficit_period=self.spb_deficit_period)
+        self.project(spb_target=spb_target, scenario=None, spb_initial_adjustment_period=self.spb_initial_adjustment_period, spb_initial_adjustment_step=self.spb_initial_adjustment_step)
 
         # Combine shocks with new baseline
         self._combine_shocks_baseline()
@@ -384,9 +384,9 @@ class EcStochasticModel(EcDsaModel):
             )
         return self.prob_above_60
     
-    #-------------------------#
-    #--- DEFICIT OPTIMIZER ---#
-    #-------------------------#
+    #-----------------------------#
+    #--- ADDITIONAL OPTIMIZERS ---#
+    #-----------------------------#
 
     def find_spb_deficit(self):
         """
@@ -394,25 +394,25 @@ class EcStochasticModel(EcDsaModel):
         """
         
         # Find spb_target
-        self.project(spb_deficit_period = 0)
+        self.project(spb_initial_adjustment_period = 0, spb_initial_adjustment_step = 0)
 
         # Raise error if deficit not excessive
-        if np.all(self.fb[self.adjustment_start:self.adjustment_end+1] >= -3):
+        if np.all(self.ob[self.adjustment_start:self.adjustment_end+1] >= -3):
             raise Exception("Deficit not excessive")
         
         # If deficit excessive, increase 0.5 adjustment periods until deficit below 3%
-        elif np.any(self.fb[self.adjustment_start:self.adjustment_end+1] < -3):
-            self.spb_deficit_period = 0
-            while np.any(self.fb[self.adjustment_start+self.spb_deficit_period: self.adjustment_end+1] < -3):
-                self.spb_deficit_period += 1
-                self.project(spb_deficit_period=self.spb_deficit_period, scenario=None)
-            print(f'Deficit periods: {self.spb_deficit_period}')
+        elif np.any(self.ob[self.adjustment_start:self.adjustment_end+1] < -3):
+            self.spb_initial_adjustment_period = 0
+            while np.any(self.ob[self.adjustment_start+self.spb_initial_adjustment_period: self.adjustment_end+1] < -3):
+                self.spb_initial_adjustment_period += 1
+                self.project(spb_initial_adjustment_period=self.spb_initial_adjustment_period, scenario=None)
+            print(f'Deficit periods: {self.spb_initial_adjustment_period}')
 
-            # If spb_deficit_period = adjusmtent_period, return spbd at adjustment_end
-            if self.spb_deficit_period == self.adjustment_period:
+            # If spb_initial_adjustment_period = adjusmtent_period, return spbd at adjustment_end
+            if self.spb_initial_adjustment_period == self.adjustment_period:
                 return self.spb_bcoa[self.adjustment_end]
                 
-            # If spb_deficit_period < adjustment_period, optimize spb
+            # If spb_initial_adjustment_period < adjustment_period, optimize spb
             else:
                 return self._find_spb_post_deficit()
 
@@ -433,26 +433,26 @@ class EcStochasticModel(EcDsaModel):
         spb_target_dict['deficit_reduction'] = spb_target
         
         # Find spb_target for debt safeguard, optimize adjustment of deficit procedure to meet debt_safeguard
-        self.spb_deficit_step = 0.5
+        self.spb_initial_adjustment_step = 0.5
         while True:
             try:
                 spb_target = self.find_spb_deterministic(scenario='main_adjustment', criterion='debt_safeguard_deficit')
                 try:
-                    self.spb_deficit_step -= 0.01
-                    if self.spb_deficit_step < 0.5:
+                    self.spb_initial_adjustment_step -= 0.01
+                    if self.spb_initial_adjustment_step < 0.5:
                         raise
-                    print(f'Decreasing spb_deficit_step to {self.spb_deficit_step}')                        
+                    print(f'Decreasing spb_initial_adjustment_step to {self.spb_initial_adjustment_step}')                        
                     spb_target = self.find_spb_deterministic(scenario='main_adjustment', criterion='debt_safeguard_deficit')
                 except:
-                    self.spb_deficit_step += 0.01
-                    print(f'Final spb_deficit_step {self.spb_deficit_step}')                        
+                    self.spb_initial_adjustment_step += 0.01
+                    print(f'spb_initial_adjustment_step {self.spb_initial_adjustment_step}')                        
                     spb_target = self.find_spb_deterministic(scenario='main_adjustment', criterion='debt_safeguard_deficit')
                     break
             except:
-                self.spb_deficit_step += 0.1
-                print(f'Increasing spb_deficit_step to {self.spb_deficit_step}')
+                self.spb_initial_adjustment_step += 0.1
+                print(f'Increasing spb_initial_adjustment_step to {self.spb_initial_adjustment_step}')
         spb_target_dict['debt_safeguard'] = spb_target
-        self.spb_deficit_step = 0.5
+        self.spb_initial_adjustment_step = 0.5
 
 
         # Find spb_target for stochastic scenario
@@ -463,23 +463,71 @@ class EcStochasticModel(EcDsaModel):
             pass
 
         # Safe and project with binding spb_target
-        print(f'{self.country} spb target: {spb_target_dict}')
+        print(f'{self.country} spb_target: {spb_target_dict}')
         spb_target = np.max(list(spb_target_dict.values()))
-        self.project(spb_target=spb_target, scenario=None, spb_deficit_period=self.spb_deficit_period)
+        self.project(spb_target=spb_target, scenario=None, spb_initial_adjustment_period=self.spb_initial_adjustment_period)
 
         return spb_target
+
+    def find_spb_post_debt_safeguard(self):
+        """
+        Find the structural primary balance that meets all scenario criteria after debt safeguard has been met.
+        """
+
+        # Find the 2028 spb that satisfies debt safeguard
+        self.project(spb_initial_adjustment_period=0, spb_initial_adjustment_step=0)
+        self.find_spb_deterministic(scenario=None, criterion='debt_safeguard')
+        spbstar_debt_safeguard = self.spb_bcoa[self.adjustment_start+3]
+
+        # Find scenarios that imply 2028 adjustment below spbstar_debt_safeguard
+        spb_target_dict = {}
+
+        # Find spb_target for adverse scenarios
+        for scenario in ['main_adjustment', 'lower_spb', 'financial_stress', 'adverse_r_g']:
+            self.project(spb_initial_adjustment_period=0, spb_initial_adjustment_step=0)
+            spb_target = self.find_spb_deterministic(scenario=scenario, criterion='debt_decline')
+            if self.d[self.adjustment_start-1] <= self.d[self.adjustment_start+3]:
+                self.project(spb_initial_adjustment_period=4, spb_initial_adjustment_step=(spbstar_debt_safeguard - self.spb_bcoa[self.adjustment_start-1]) / 4)
+                spb_target = self.find_spb_deterministic(scenario=scenario, criterion='debt_decline')
+                spb_target_dict[f'{scenario}'] = spb_target
+        
+        # Find spb_target for deficit_reduction
+        self.project(spb_initial_adjustment_period=0, spb_initial_adjustment_step=0)
+        spb_target = self.find_spb_deterministic(scenario='main_adjustment', criterion='deficit_reduction')
+        if self.d[self.adjustment_start-1] <= self.d[self.adjustment_start+3]:
+            self.project(spb_initial_adjustment_period=4, spb_initial_adjustment_step=(spbstar_debt_safeguard - self.spb_bcoa[self.adjustment_start-1]) / 4)
+            spb_target = self.find_spb_deterministic(scenario='main_adjustment', criterion='deficit_reduction')
+            spb_target_dict['deficit_reduction'] = spb_target
+
+        # Find spb_target for stochastic scenario
+        try:
+            self.project(spb_initial_adjustment_period=0, spb_initial_adjustment_step=0)
+            spb_target = self.find_spb_stochastic()
+            if self.d[self.adjustment_start-1] <= self.d[self.adjustment_start+3]:
+                self.project(spb_initial_adjustment_period=4, spb_initial_adjustment_step=(spbstar_debt_safeguard - self.spb_bcoa[self.adjustment_start-1]) / 4)
+                spb_target = self.find_spb_stochastic()
+                spb_target_dict[f'stochastic'] = spb_target
+        except:
+            pass
+
+        # Safe and project with binding spb_target
+        spb_target = np.max(list(spb_target_dict.values()))
+        self.project(scenario=None, spb_target=spb_target, spb_initial_adjustment_period=4, spb_initial_adjustment_step=self.spb_initial_adjustment_step)
+        print(f'{self.country} spb target: {spb_target_dict}')
+        return spb_target
+
 
     #---------------------------#
     #--- DEFICIT PROBABILITY ---#
     #---------------------------#
 
-    def find_deficit_prob(self, spb_target, spb_deficit_period=0, spb_deficit_step=0.5, N=200000):
+    def find_deficit_prob(self, spb_target, spb_initial_adjustment_period=0, spb_initial_adjustment_step=0.5, N=200000):
         """
         Find the probability of the deficit exceeding 3% in the adjustment period.
         """
 
         # Initial projection
-        self.project(scenario=None, spb_target=spb_target, spb_deficit_period=spb_deficit_period, spb_deficit_step=spb_deficit_step)
+        self.project(scenario=None, spb_target=spb_target, spb_initial_adjustment_period=spb_initial_adjustment_period, spb_initial_adjustment_step=spb_initial_adjustment_step)
         
         # Set stochastic period to include adjustment period
         self.T_stochastic = self.T - self.adjustment_start
@@ -507,8 +555,8 @@ class EcStochasticModel(EcDsaModel):
         self._simulate_debt()
         
         # Simulate deficit
-        self.fb_sim = np.zeros([self.N, self.T_stochastic+1])  # Debt to GDP ratio
-        self.fb_sim[:, 0] = self.fb[-(self.T_stochastic+1)]
+        self.ob_sim = np.zeros([self.N, self.T_stochastic+1])  # Debt to GDP ratio
+        self.ob_sim[:, 0] = self.ob[-(self.T_stochastic+1)]
         self._simulate_deficit()
 
         # Calculate probability of excessive deficit
@@ -522,7 +570,7 @@ class EcStochasticModel(EcDsaModel):
         """
         # Call the Numba JIT function with converted self variables and d_sim as an argument
         simulate_deficit_jit(
-            N=self.N, T_stochastic=self.T_stochastic, pb_sim=self.pb_sim, iir_sim=self.iir_sim, ng_sim=self.ng_sim, d_sim=self.d_sim, fb_sim=self.fb_sim
+            N=self.N, T_stochastic=self.T_stochastic, pb_sim=self.pb_sim, iir_sim=self.iir_sim, ng_sim=self.ng_sim, d_sim=self.d_sim, ob_sim=self.ob_sim
             )
     
     def _prob_deficit(self):
@@ -532,7 +580,7 @@ class EcStochasticModel(EcDsaModel):
         prob_excessive_deficit = np.full(self.adjustment_period, 0, dtype=np.float64)
         for n in range(self.N):
             for i in range(self.adjustment_period):
-                if -3.5 > self.fb_sim[n, i+1] or (-3 > self.fb_sim[n, i+1] and -3 > self.fb_sim[n, i+2]):
+                if -3.5 > self.ob_sim[n, i+1] or (-3 > self.ob_sim[n, i+1] and -3 > self.ob_sim[n, i+2]):
                     prob_excessive_deficit[i] += 1
         return prob_excessive_deficit / self.N  
   
@@ -541,13 +589,13 @@ class EcStochasticModel(EcDsaModel):
 #---------------------------------#
 
 @jit(nopython=True)
-def combine_shocks_baseline_jit(N, T_stochastic, shocks_sim, exr, iir, ng, pb, sf, d, d_sim, exr_sim, iir_sim, ng_sim, pb_sim, sf_sim):
+def combine_shocks_baseline_jit(N, T_stochastic, shocks_sim, exr_eur, iir, ng, pb, sf, d, d_sim, exr_eur_sim, iir_sim, ng_sim, pb_sim, sf_sim):
     """
     Add shocks to the baseline variables and set starting values for simulation.
     """
     # Add shocks to the baseline variables for period after start year
     for n in range(N):
-        exr_sim[n, 1:] = exr[-T_stochastic:] + shocks_sim[n, 0] 
+        exr_eur_sim[n, 1:] = exr_eur[-T_stochastic:] + shocks_sim[n, 0] 
         iir_sim[n, 1:] = iir[-T_stochastic:] + shocks_sim[n, 1]
         ng_sim[n, 1:] = ng[-T_stochastic:] + shocks_sim[n, 2]
         pb_sim[n, 1:] = pb[-T_stochastic:] + shocks_sim[n, 3]
@@ -557,22 +605,22 @@ def combine_shocks_baseline_jit(N, T_stochastic, shocks_sim, exr, iir, ng, pb, s
 
     # Set the starting values t0
     d_sim[:, 0] = d[-T_stochastic-1]
-    exr_sim[:, 0] = exr[-T_stochastic-1]
+    exr_eur_sim[:, 0] = exr_eur[-T_stochastic-1]
     iir_sim[:, 0] = iir[-T_stochastic-1]
     ng_sim[:, 0] = ng[-T_stochastic-1]
     pb_sim[:, 0] = pb[-T_stochastic-1]
 
 
 @jit(nopython=True)
-def simulate_debt_jit(N, T_stochastic, share_eur, d_sim, iir_sim, ng_sim, exr_sim, pb_sim, sf_sim):
+def simulate_debt_jit(N, T_stochastic, share_eur_stochastic, d_sim, iir_sim, ng_sim, exr_eur_sim, pb_sim, sf_sim):
     """
     Simulate the debt-to-GDP ratio using the baseline variables and the shocks.
     """
     for n in range(N):
         for t in range(1, T_stochastic+1):
-            d_sim[n, t] = share_eur * d_sim[n, t-1] * (1 + iir_sim[n, t]/100) / (1 + ng_sim[n, t]/100) \
-                        + (1 - share_eur) * d_sim[n, t-1] * (1 + iir_sim[n, t]/100) / (1 + ng_sim[n, t]/100) \
-                        * (exr_sim[n, t]) / (exr_sim[n, t-1]) - pb_sim[n, t] + sf_sim[n, t]
+            d_sim[n, t] = share_eur_stochastic * d_sim[n, t-1] * (1 + iir_sim[n, t]/100) / (1 + ng_sim[n, t]/100) \
+                        + (1 - share_eur_stochastic) * d_sim[n, t-1] * (1 + iir_sim[n, t]/100) / (1 + ng_sim[n, t]/100) \
+                        * (exr_eur_sim[n, t]) / (exr_eur_sim[n, t-1]) - pb_sim[n, t] + sf_sim[n, t]
             
 @jit(nopython=True)
 def prob_debt_explodes_jit(N, d_sim):
@@ -597,10 +645,10 @@ def prob_debt_above_60_jit(N, d_sim):
     return prob_debt_above_60 / N
 
 @jit(nopython=True)
-def simulate_deficit_jit(N, T_stochastic, pb_sim, iir_sim, ng_sim, d_sim, fb_sim):
+def simulate_deficit_jit(N, T_stochastic, pb_sim, iir_sim, ng_sim, d_sim, ob_sim):
     """
     Simulate the fiscal balance ratio using the baseline variables and the shocks.
     """
     for n in range(N):
         for t in range(1, T_stochastic+1):
-            fb_sim[n, t] = pb_sim[n, t] - iir_sim[n, t] / 100 / (1 + ng_sim[n, t] / 100) * d_sim[n, t-1]
+            ob_sim[n, t] = pb_sim[n, t] - iir_sim[n, t] / 100 / (1 + ng_sim[n, t] / 100) * d_sim[n, t-1]
