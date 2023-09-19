@@ -8,13 +8,13 @@
 # dynamics under different scenario assumptions. 
 #
 # The class encompasses three primary parts:
-# 1. Data Methods: These methods clean and combine input data.
-# 2. Projection Methods: These methods handle the projection of economic variables such as GDP
+# 1. **Data Methods:** These methods clean and combine input data.
+# 2. **Projection Methods:** These methods handle the projection of economic variables such as GDP
 #    growth, primary balance, interest rates, and debt dynamics, based on different scenarios.
-# 3. Optimization and Auxiliary Methods: These methods include functions to optimize the primary
+# 3. **Optimization and Auxiliary Methods:** These methods include functions to optimize the primary
 #    balance to meet specific criteria, check deterministic conditions, and the creation of DataFrames.
 # 
-# In addition, the EcStochasticModel Subclass, a specialized subclass building upon this base class,
+# In addition, the Stochastic Model Subclass, a specialized subclass building upon this base class,
 # provides additional features for stochastic projection of economic variables under uncertainty. The
 # stochastic model subclass is defined in the file EcStochasticModelClass.py.
 #
@@ -430,7 +430,7 @@ class EcDsaModel:
                 self.D_lt_inst[t] = self.D_lt_inst[t-1] - self.amortization_lt_inst[t]
             
         
-        ## Calculate share of lt debt maturing each year
+        # Calculate share of lt debt maturing each year
         # Set t and t + 10 value of maturing lt debt share
         self.share_lt_maturing[2023-self.start_year] = self.share_lt_maturing_t0 
         self.share_lt_maturing[(2033-self.start_year):] = self.share_lt_maturing_t10
@@ -845,9 +845,9 @@ class EcDsaModel:
 
     def df(self, *vars):
         """
-        Returns a dataframe with the specified variables as columns and years as rows.
+        Return a dataframe with the specified variables as columns and years as rows.
         Takes a variable name (string) or a list of variable names as input.
-        Alternatively takes a dictionary as input, where keys are variables (string) and values are variable names (string).
+        Alternatively takes a dictionary as input, where keys are variables (string) and values are variable names.
         """
         if isinstance(vars[0], dict):
             var_dict = vars[0]

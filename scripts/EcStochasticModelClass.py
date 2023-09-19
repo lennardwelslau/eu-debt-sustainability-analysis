@@ -18,6 +18,7 @@
 #
 #=========================================================================================#
 
+
 # Import libraries and modules
 import numpy as np
 import pandas as pd
@@ -30,6 +31,7 @@ from numba import jit
 from EcDsaModelClass import EcDsaModel
 
 class EcStochasticModel(EcDsaModel):
+
     #----------------------------#
     #--- INIITIALIZE SUBCLASS ---# 
     #----------------------------#
