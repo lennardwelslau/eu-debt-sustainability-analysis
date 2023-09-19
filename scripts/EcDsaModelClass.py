@@ -8,10 +8,9 @@
 # dynamics under different scenario assumptions. 
 #
 # The class encompasses three primary parts:
-# 1. **Data Methods:** These methods clean and combine input data.
-# 2. **Projection Methods:** These methods handle the projection of economic variables such as GDP
-#    growth, primary balance, interest rates, and debt dynamics, based on different scenarios.
-# 3. **Optimization and Auxiliary Methods:** These methods include functions to optimize the primary
+# 1. Data Methods: These methods clean and combine input data.
+# 2. Projection Methods: These methods handle the projection of economic variables such as GDP
+# 3. Optimization and Auxiliary Methods: These methods include functions to optimize the primary
 #    balance to meet specific criteria, check deterministic conditions, and the creation of DataFrames.
 # 
 # In addition, the Stochastic Model Subclass, a specialized subclass building upon this base class,

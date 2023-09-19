@@ -1,6 +1,7 @@
 #=========================================================================================#
 #          European Commission Debt Sustainability Analysis - Stochastic SubClass         #
 #=========================================================================================#
+# 
 # This Python file defines the stochastic model subclass named "EcStochasticModel" which is 
 # built upon the base class "EcDsaModel". The subclass is designed to simulate a stochastic 
 # debt sustainability analysis (DSA) model, incorporating randomness and uncertainty in the 
@@ -11,7 +12,7 @@
 # of debt exploding, and to optimize the structural primary balance, as well as additional 
 # optimizers for scenarios with non-linear adjustment.
 # 
-# For comments and suggestions please contact lennard.welslau[at]bruegel[dot]org
+# For comments and suggestions please contact lennard.welslau[at]bruegel[dot]org 
 #
 # Author: Lennard Welslau
 # Date: 01/09/2023
