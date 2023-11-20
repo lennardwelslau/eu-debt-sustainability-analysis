@@ -712,7 +712,7 @@ class EcDsaModel:
 
         # Use DSM 2023 Annex A3 formulation after
         else:
-            self.iir_lt[t] = self.beta[t-1] * self.i_lt[t] + (1 - self.beta[t-1]) * self.iir[t-1]
+            self.iir_lt[t] = self.beta[t-1] * self.i_lt[t] + (1 - self.beta[t-1]) * self.iir_lt[t-1]
             self.iir[t] = self.alpha[t-1] * self.i_st[t] + (1 - self.alpha[t-1]) * self.iir_lt[t]
 
             # Alternative formulation    
