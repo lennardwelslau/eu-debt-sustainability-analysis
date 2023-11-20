@@ -715,9 +715,6 @@ class EcDsaModel:
             self.iir_lt[t] = self.beta[t-1] * self.i_lt[t] + (1 - self.beta[t-1]) * self.iir_lt[t-1]
             self.iir[t] = self.alpha[t-1] * self.i_st[t] + (1 - self.alpha[t-1]) * self.iir_lt[t]
 
-            # Alternative formulation    
-            # self.iir[t] = self.interest[t] / self.D[t-1] * 100
-
         # Replace all 10 < iir < 0 with previous period value
         for iir in [self.iir, self.iir_lt]:
             if iir[t] < 0 or iir[t] > 10 or np.isnan(iir[t]):
