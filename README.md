@@ -4,7 +4,7 @@ This repository contains Python code for the replication of the results in the B
 
 All code files can be found in the "scripts" folder. The Jupyter Notebook "ec_dsa_main.ipynb" reproduces the results and introduces various model functionalities. The Python file "ec_dsa_functions.py" contains functions that organize the anlysis in "ec_dsa_main.ipynb". The Python files "EcDsaModelClass.py" and "EcStochasticModelClass.py" contain the Python class EcDsaModelClass and its subclass EcStochasticModel, which facilitate the deterministic and stochastic analysis. Results are saved in the "output" folder. 
 
-Publicly available input data are saved in the "data/InputData" folder. Note that non-public data has to be added manually before use. For further details on data sources, see the "data_sources.xlsx" file in the data folder.
+Publicly available input data are saved in the "data/InputData" folder. Note that non-public data have to be added manually before use. For further details on data sources, see the "data_sources.xlsx" file in the data folder.
 
 External packages used include numpy, pandas, datetime, time, os, matplotlib, seaborn, scipy, and numba.
 
