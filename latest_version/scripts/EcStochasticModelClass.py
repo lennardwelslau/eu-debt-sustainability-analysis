@@ -8,8 +8,7 @@
 # GDP growth, and the primary balances. 
 #
 # The model includes methods to perform simulations, plot fan charts, calculate the probability 
-# of debt exploding, and to optimize the structural primary balance, as well as additional 
-# optimizers for scenarios with non-linear adjustment.
+# of debt exploding, and to optimize the structural primary balance.
 # 
 # For comments and suggestions please contact lennard.welslau[at]bruegel[dot]org
 #
