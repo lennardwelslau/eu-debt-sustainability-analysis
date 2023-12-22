@@ -373,6 +373,7 @@ class DsaModel:
             else:
                 self.spb_bl[t] = self.spb_bl[t-1]
             self.spb_bca[t] = self.spb_bl[t]
+            self.spb[t] = self.spb_bl[t]
     
     def _clean_pb(self):
         """
