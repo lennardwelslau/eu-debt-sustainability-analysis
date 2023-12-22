@@ -720,7 +720,7 @@ class DsaModel:
         """
         Project structural primary balance
         """
-        for t in range(1, self.T):
+        for t in range(self.T):
             
             # Ageing cost adjustments are accounted for by spb adjustment during the adjustment period
             if t <= self.adjustment_end: 
