@@ -621,7 +621,6 @@ class EcDsaModel:
         Apply lower_spb scenario
         """
         # If 4-year adjustment period, spb_bca decreases by 0.5 for 2 years after adjustment period, if 7-year for 3 years
-        # Only for detemrinistic SPB optimization, should not be combined with post_adjustment steps
         lower_spb_adjustment_period = int(np.floor(self.adjustment_period/2))
         for t in range(self.adjustment_end + 1, self.T):
             if t <= self.adjustment_end + lower_spb_adjustment_period:
