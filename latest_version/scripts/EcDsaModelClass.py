@@ -21,7 +21,7 @@
 # For comments and suggestions please contact lennard.welslau[at]bruegel[dot]org
 #
 # Author: Lennard Welslau
-# Updated: 2023-12-21
+# Updated: 2021-09-30 Preliminary version not for distribution.
 #
 #=========================================================================================#
 
@@ -85,7 +85,8 @@ class EcDsaModel:
         self.SPB = np.full(self.T, np.nan, dtype=np.float64) # structural primary balance
         self.pb_bl = np.full(self.T, np.nan, dtype=np.float64) # baseline primary balance over GDP
         self.spb_bl = np.full(self.T, np.nan, dtype=np.float64) # baseline primary balance over GDP
-        self.spb_bca = np.full(self.T, np.nan, dtype=np.float64) # primary balance over GDP
+        self.spb_bca = np.full(self.T, np.nan, dtype=np.float64) # structural primary balance over GDP before cost of ageing
+        self.spb = np.full(self.T, np.nan, dtype=np.float64) # structural primary balance over GDP
         self.pb_cyclical_adj = np.full(self.T, np.nan, dtype=np.float64) # primary balance over GDP adjusted for cyclical_component component
         self.pb_cyclical_ageing_adj = np.full(self.T, np.nan, dtype=np.float64) # primary balance over GDP adjusted for cyclical and ageing_component
         self.pb = np.full(self.T, np.nan, dtype=np.float64) # primary balance over GDP
@@ -446,14 +447,15 @@ class EcDsaModel:
     #--------------------------#
     def project(self,
                 spb_target=None,
-                initial_adjustment_period=0,
-                initial_adjustment_step=0.5,
-                intermediate_adjustment_period=0,
-                intermediate_adjustment_step=0,                
-                deficit_resilience_periods=None,
-                post_adjustment_periods=None,
-                deficit_resilience_step=0,
-                scenario='main_adjustment'):
+                initial_adjustment_period=0, # length of first linear adjustment phase (EDP)
+                initial_adjustment_step=0.5, # annual step size of first linear adjustment phase
+                intermediate_adjustment_period=0, # length of second linear adjustment phase, not needed for current version
+                intermediate_adjustment_step=0, # annual step size of second linear adjustment phase, not needed for current version                
+                deficit_resilience_periods=None, # list of years during adjustment where minimum step size is enforced
+                post_adjustment_periods=None, # list of years after adjustment where minimum step size is enforced
+                deficit_resilience_step=0, # minimum step size enforced enforced by deficit resilience safeguard
+                scenario='main_adjustment' # scenario parameter, needed for DSA criteria
+                ): 
         """
         Project debt dynamics
         """
@@ -498,8 +500,9 @@ class EcDsaModel:
 
         ## Project debt dynamics
         self._project_market_rate()
-        self._project_spb_bca()
+        self._project_net_expenditure_path()
         self._project_gdp()
+        self._project_spb()
         self._project_pb()
         self._project_d()
    
@@ -544,8 +547,17 @@ class EcDsaModel:
         x_lt = np.arange(len(self.i_lt))
         mask_lt = np.isnan(self.i_lt)
         self.i_lt[mask_lt] = np.interp(x_lt[mask_lt], x_lt[~mask_lt], self.i_lt[~mask_lt])
+    
+        if self.scenario == 'adverse_r_g': self._apply_adverse_r()
 
-    def _project_spb_bca(self):
+    def _apply_adverse_r(self):
+        """ 
+        Applies adverse interest rate conditions for adverse r-g scenario
+        """
+        self.i_st[self.adjustment_end+1:] += 0.5
+        self.i_lt[self.adjustment_end+1:] += 0.5
+
+    def _project_net_expenditure_path(self):
         """
         Project structural primary balance, excluding ageing cost
         """
@@ -576,16 +588,14 @@ class EcDsaModel:
         # Calculate difference between baseline and defcit resilience steps
         deficit_resilience_diff = np.sum(self.adjustment_steps_baseline - self.adjustment_steps)
 
-        # Add exception for final period if inv_shock
-        if self.inv_shock and self.deficit_resilience_periods[-1] and self.adjustment_steps[-1] == self.deficit_resilience_step and deficit_resilience_diff < -0.3:
+        # Final period exception for deficit resilience if inv_shock and sufficient frontloaded adjustment to offset exception
+        if self.inv_shock and self.deficit_resilience_periods[-1] and self.adjustment_steps[-1] == self.deficit_resilience_step and deficit_resilience_diff < -self.deficit_resilience_step:
             self.adjustment_steps[-1] -= self.deficit_resilience_step
 
         # Identify periods that are after debt safeguard and deficit resilience periods to correct frontloading
         final_adjustment_periods = (
                     np.arange(self.adjustment_period) >= self.initial_adjustment_period + self.intermediate_adjustment_period) & (
                     np.arange(self.adjustment_period) > next((i for i, value in reversed(list(enumerate(self.deficit_resilience_periods))) if value), 0))
-                    # & (
-                    #~self.deficit_resilience_periods)
         
         # Calculate correction for difference applied to remaining periods
         self.final_adjustment_step = deficit_resilience_diff / np.sum(final_adjustment_periods)
@@ -627,7 +637,8 @@ class EcDsaModel:
 
     def _apply_inv_shock(self):
         """
-        Apply inv_shock scenario
+        Apply inv_shock scenario that reduces spb_bca by size of inv_shock from first to penultimate adjustment period.
+        Used for counterfactual analysis to check how much investment would be allowed under various specifications.
         """
         self.spb_bca[self.adjustment_start:self.adjustment_end] -= self.inv_shock
 
@@ -636,131 +647,114 @@ class EcDsaModel:
         Project nominal GDP.
         """  
         for t in range(1, self.T):
-            
-            ## Real growth
-            # fiscal multiplier effect from change in SPB relative to baseline
-            self.fm_effect[t] = self.fm * ((self.spb_bca[t] - self.spb_bca[t-1]) - (self.spb_bl[t] - self.spb_bl[t-1]))   
-            
-            # Effect on output gap
-            self.output_gap[t] = self.output_gap_bl[t] - self.fm_effect[t] - 2/3 * self.fm_effect[t-1] - 1/3 * self.fm_effect[t-2]
-            
-            # Real growth and real GDP
-            self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
-            self.rg[t] = (self.rgdp[t] - self.rgdp[t-1]) / self.rgdp[t-1] * 100
-
-            ## Nominal growth
-            # Before adjustment period, nominal growth is baseline
-            if t < self.adjustment_start:
-                self.ng[t] = self.ng_bl[t]
-                self.ngdp[t] = self.ngdp_bl[t]
-
-            # After adjustment period, nominal growth based on real growth and inflation
-            elif t >= self.adjustment_start:
-                self.ng[t] = (1 + self.rg[t] / 100) * (1 + self.pi[t] / 100) * 100 - 100 
-
-                # Adjust nominal growth for adverse r-g scenario
-                if self.scenario == 'adverse_r_g' and t > self.adjustment_end:
-                    self.ng[t] -= 0.5
-            
-                # project nominal GDP
-                self.ngdp[t] = self.ngdp[t-1] * (1 + self.ng[t] / 100) 
-
-    def _project_pb(self):
+            self._calculate_rgdp(t)
+            self._calculate_ngdp(t)
+    
+    def _calculate_rgdp(self, t):
         """
-        Project primary balance adjusted for cyclical_component component and ageing costs
+        Calcualtes real GDP and real growth
+        """
+        # Fiscal multiplier effect from change in SPB relative to baseline
+        self.fm_effect[t] = self.fm * ((self.spb_bca[t] - self.spb_bca[t-1]) - (self.spb_bl[t] - self.spb_bl[t-1]))   
+        
+        # Effect on output gap
+        self.output_gap[t] = self.output_gap_bl[t] - self.fm_effect[t] - 2/3 * self.fm_effect[t-1] - 1/3 * self.fm_effect[t-2]
+        
+        # Real growth and real GDP
+        self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
+        self.rg[t] = (self.rgdp[t] - self.rgdp[t-1]) / self.rgdp[t-1] * 100
+
+    def _calculate_ngdp(self, t):
+        """
+        Calcualtes nominal GDP and nominal growth
+        """
+        # Before adjustment period, nominal growth is baseline
+        if t < self.adjustment_start:
+            self.ng[t] = self.ng_bl[t]
+            self.ngdp[t] = self.ngdp_bl[t]
+
+        # After adjustment period, nominal growth based on real growth and inflation
+        elif t >= self.adjustment_start:
+            self.ng[t] = (1 + self.rg[t] / 100) * (1 + self.pi[t] / 100) * 100 - 100 
+
+            # Adjust nominal growth for adverse r-g scenario
+            if self.scenario == 'adverse_r_g' and t > self.adjustment_end: self._apply_adverse_g(t)
+                            
+            # project nominal GDP
+            self.ngdp[t] = self.ngdp[t-1] * (1 + self.ng[t] / 100) 
+
+    def _apply_adverse_g(self, t):
+        """
+        Applies adverse growth conditions for adverse r-g scenario
+        """
+        self.ng[t] -= 0.5
+
+    def _project_spb(self):
+        """
+        Project structural primary balance
         """
         for t in range(1, self.T):
-            # Get real-potential gdp growth gap and cyclical_component component of primary balance
-            self.output_gap[t] = (self.rgdp[t] / self.rgdp_pot[t] - 1) * 100
+            
+            # Ageing cost adjustments are accounted for by spb adjustment during the adjustment period
+            if t <= self.adjustment_end: 
+                self.spb[t] = self.spb_bca[t]
 
-            # Compute components
+            if t > self.adjustment_end: 
+                self.ageing_component[t] = - (self.ageing_cost[t] - self.ageing_cost[self.adjustment_end]) 
+                self.spb[t] = self.spb_bca[t] + self.ageing_component[t]
+
+            # Total SPB for calcualtion of structural deficit
+            self.SPB[t] = self.spb[t] / 100 * self.ngdp[t]
+    
+    def _project_pb(self):
+        """
+        Project primary balance adjusted as sum of SPB, cyclical component, and property income component
+        """
+        for t in range(1, self.T):
+            
+            # Equal to baseline until adjustment start
+            if t < self.adjustment_start: self.pb[t] = self.pb_bl[t]
+
+            # Calculate components
+            self.output_gap[t] = (self.rgdp[t] / self.rgdp_pot[t] - 1) * 100
             self.cyclical_component[t] = self.pb_elasticity * self.output_gap[t]
-            self.ageing_component[t] = - (self.ageing_cost[t] - self.ageing_cost[self.adjustment_end])
             self.property_income_component[t] = self.property_income[t] - self.property_income[self.adjustment_start - 1]
 
-            # Up to adjustment_start, use baseline pb
-            if t < self.adjustment_start:
-                self.ageing_component[t] = 0
-                self.pb[t] = self.pb_bl[t]
-
-            # During adjustment period, primary balance only corrected for cyclical_component
-            elif t >= self.adjustment_start and t <= self.adjustment_end:
-                self.ageing_component[t] = 0 
-                self.pb_cyclical_adj[t] = self.spb_bca[t] + self.cyclical_component[t] + self.property_income_component[t]
-                self.pb[t] = self.pb_cyclical_adj[t]
-
-            # After adjustment period, primary balance corrected for cyclical_component and ageing costs
-            if t > self.adjustment_end:
-                self.pb_cyclical_ageing_adj[t] = self.spb_bca[t] + self.ageing_component[t] + self.cyclical_component[t] + self.property_income_component[t]
-                self.pb[t] = self.pb_cyclical_ageing_adj[t]
-
-            # calculate stock flow over GDP
-            self.sf[t] = self.SF[t] / self.ngdp[t] * 100
-
-            # Total primary balance in model
+            # Calculate primary balance ratio as sum of components and total primary balance
+            self.pb[t] = self.spb[t] + self.cyclical_component[t] + self.property_income_component[t]
             self.PB[t] = self.pb[t] / 100 * self.ngdp[t]
-
-            # Total SPB for reference
-            self.SPB[t] = self.spb_bca[t] / 100 * self.ngdp[t]
 
     def _project_d(self):
         """
-        Loop for debt dynamics        
+        Main loop for debt dynamics        
         """
-        ## Adjust interest rates for adverse r-g scenario
-        if self.scenario == 'adverse_r_g':
-            self._adjustment_adverse_r_g()
-
         for t in range(1,self.T):
             
-            ## Calculate implicit interest rate
+            # Apply financial stress scenario if specified
+            if self.scenario == 'financial_stress' and t == self.adjustment_end+1: self._apply_financial_stress(t)
+
+            # Calculate implicit interest rate, interestst, amortizations, gross financing needs, debt stock, overall balance, and debt ratio
             self._calculate_iir(t)
+            self._calculate_interest(t)
+            self._calculate_amortization(t)
+            self._calculate_gfn(t)
+            self._calculate_debt_stock(t)
+            self._calculate_balance(t)
+            self._calculate_debt_ratio(t)
 
-            ## Adjust interest rates for adverse financial stress scenario
-            if self.scenario == 'financial_stress' and t == self.adjustment_end+1:
-                self._adjustment_financial_stress(t)
+    def _apply_financial_stress(self, t):
+        """
+        Adjust interest rates for financial stress scenario
+        """
+        # Adjust market rates for high debt countries financial stress scenario
+        if self.d[self.adjustment_end] > 90:
+            self.i_st[t] += (1 + (self.d[self.adjustment_end] - 90) * 0.06)
+            self.i_lt[t] += (1 + (self.d[self.adjustment_end] - 90) * 0.06)
 
-            ## Interest and amortization payments 
-            # Short-term debt
-            self.interest_st[t] = self.D_st[t-1] * self.i_st[t-1] / 100 # interest payments on newly issued short-term debt
-            self.amortization_st[t] = self.D_st[t-1] # amortization payments on short-term debt share in last years gross financing needs
-
-            # Long-term debt
-            self.interest_lt[t] = self.iir_lt[t] / 100 * self.D_lt[t-1] # lt interest is t-1 lt debt times implicit lt interest rate
-            self.amortization_lt[t] = self.share_lt_maturing[t] * self.D_lt[t-1] + self.amortization_lt_inst[t] # lt amortization based on maturing share and inst debt
-
-            # Aggregate interest and amortization payments
-            self.interest[t] = self.interest_st[t] + self.interest_lt[t] # interest payments on newly issued debt and outstanding legacy debt
-            self.amortization[t] = self.amortization_st[t] + self.amortization_lt[t] # amortization of newly issued st, lt debt
-
-            ## Gross financing needs based on old and new financing costs and primary balance
-            self.gfn[t] = np.max([self.interest[t] + self.amortization[t] - self.PB[t] + self.SF[t], 0])
-
-            ## New debt stock based on new issuance and debt stock last year
-            # Total debt
-            self.D[t] = np.max([self.D[t-1] - self.amortization[t] + self.gfn[t], 0])
-
-            # Distribution of short-term and long-term debt in financing needs
-            D_stn_theoretical = self.share_st * self.D[t] # st debt to keep share equal to share_st
-            D_ltn_theoretical = (1 - self.share_st) * self.D[t] - self.D_lt[t-1] + self.amortization_lt[t] # lt debt to keep share equal to 1 - share_st
-            share_st_issuance = D_stn_theoretical / (D_stn_theoretical + D_ltn_theoretical) # share of st in gfn
-            
-            # Calculate short-term and long-term debt issuance
-            self.D_st[t] = share_st_issuance * self.gfn[t]
-            self.D_ltn[t] = (1 - share_st_issuance) * self.gfn[t]
-            self.D_lt[t] = self.D_lt[t-1] - self.amortization_lt[t] + self.D_ltn[t]
-
-            ## Calculate the overall and structural balance
-            self.ob[t] = (self.PB[t] - self.interest[t]) / self.ngdp[t] * 100
-            self.sb[t] = ((self.spb_bca[t]/100 * self.ngdp[t]) - self.interest[t]) / self.ngdp[t] * 100 
-
-            ## Calculate the debt to GDP ratio
-            self.d[t] = np.max([
-                self.share_domestic * self.d[t-1] * (1 + self.iir[t] / 100) / (1 + self.ng[t] / 100) \
-                + self.share_eur * self.d[t-1] * (1 + self.iir[t] / 100) / (1 + self.ng[t] / 100) * (self.exr_eur[t] / self.exr_eur[t-1]) \
-                + self.share_foreign * self.d[t-1] * (1 + self.iir[t] / 100) / (1 + self.ng[t] / 100) * (self.exr_usd[t] / self.exr_usd[t-1]) \
-                - self.pb[t] + self.sf[t], 0
-                ])
+        # Adjust market rates for low debt countries financial stress scenario
+        else:
+            self.i_st[t] += 1
+            self.i_lt[t] += 1
 
     def _calculate_iir(self, t):
         """
@@ -784,28 +778,69 @@ class EcDsaModel:
         for iir in [self.iir, self.iir_lt]:
             if iir[t] < 0 or iir[t] > 10 or np.isnan(iir[t]):
                 iir[t] = iir[t-1]
-
-    def _adjustment_adverse_r_g(self):
-        """ 
-        Adjust interest rates for adverse r-g scenario
+    
+    def _calculate_interest(self, t):
         """
-        # Adjust market rates for adverse r-g scenario
-        self.i_st[self.adjustment_end+1:] += 0.5
-        self.i_lt[self.adjustment_end+1:] += 0.5
-
-    def _adjustment_financial_stress(self, t):
+        Calculate interest payments
         """
-        Adjust interest rates for financial stress scenario
-        """
-        # Adjust market rates for high debt countries financial stress scenario
-        if self.d[self.adjustment_end] > 90:
-            self.i_st[t] += (1 + (self.d[self.adjustment_end] - 90) * 0.06)
-            self.i_lt[t] += (1 + (self.d[self.adjustment_end] - 90) * 0.06)
+        # Calculate interest payments on newly issued debt
+        self.interest_st[t] = self.D_st[t-1] * self.i_st[t-1] / 100 # interest payments on newly issued short-term debt
+        self.interest_lt[t] = self.iir_lt[t] / 100 * self.D_lt[t-1] # lt interest is t-1 lt debt times implicit lt interest rate
+        self.interest[t] = self.interest_st[t] + self.interest_lt[t] # interest payments on newly issued debt and outstanding legacy debt
 
-        # Adjust market rates for low debt countries financial stress scenario
-        else:
-            self.i_st[t] += 1
-            self.i_lt[t] += 1
+    def _calculate_amortization(self, t):
+        """
+        Calculate amortization payments
+        """
+        # Calculate amortization payments on newly issued debt
+        self.amortization_st[t] = self.D_st[t-1] # amortization payments on short-term debt share in last years gross financing needs
+        self.amortization_lt[t] = self.share_lt_maturing[t] * self.D_lt[t-1] + self.amortization_lt_inst[t] # lt amortization based on maturing share and inst debt
+        self.amortization[t] = self.amortization_st[t] + self.amortization_lt[t] # amortization of newly issued st, lt debt
+
+    def _calculate_debt_stock(self, t):
+        """
+        Calculate new debt stock and distribution of new short and long-term issuance
+        """
+        # Total debt stock is equal to last period stock minus amortization plus financing needs
+        self.D[t] = np.max([self.D[t-1] - self.amortization[t] + self.gfn[t], 0])
+
+        # Distribution of short-term and long-term debt in financing needs
+        D_stn_theoretical = self.share_st * self.D[t] # st debt to keep share equal to share_st
+        D_ltn_theoretical = (1 - self.share_st) * self.D[t] - self.D_lt[t-1] + self.amortization_lt[t] # lt debt to keep share equal to 1 - share_st
+        share_st_issuance = D_stn_theoretical / (D_stn_theoretical + D_ltn_theoretical) # share of st in gfn
+        
+        # Calculate short-term and long-term debt issuance
+        self.D_st[t] = share_st_issuance * self.gfn[t]
+        self.D_ltn[t] = (1 - share_st_issuance) * self.gfn[t]
+        self.D_lt[t] = self.D_lt[t-1] - self.amortization_lt[t] + self.D_ltn[t]
+
+    def _calculate_gfn(self, t):
+        """
+        Calculate gross financing needs
+        """
+        self.gfn[t] = np.max([self.interest[t] + self.amortization[t] - self.PB[t] + self.SF[t], 0])
+
+    def _calculate_balance(self, t):
+        """
+        Calculate overall balance and structural fiscal balance
+        """
+        self.ob[t] = (self.PB[t] - self.interest[t]) / self.ngdp[t] * 100
+        self.sb[t] = (self.SPB[t] - self.interest[t]) / self.ngdp[t] * 100 
+        
+    def _calculate_debt_ratio(self, t):
+        """
+        Calculate debt ratio
+        """
+        # Calculate stock flow ratio
+        self.sf[t] = self.SF[t] / self.ngdp[t] * 100
+        
+        # Calculate debt ratio (floor zero)
+        self.d[t] = np.max([
+            self.share_domestic * self.d[t-1] * (1 + self.iir[t] / 100) / (1 + self.ng[t] / 100) \
+            + self.share_eur * self.d[t-1] * (1 + self.iir[t] / 100) / (1 + self.ng[t] / 100) * (self.exr_eur[t] / self.exr_eur[t-1]) \
+            + self.share_foreign * self.d[t-1] * (1 + self.iir[t] / 100) / (1 + self.ng[t] / 100) * (self.exr_usd[t] / self.exr_usd[t-1]) \
+            - self.pb[t] + self.sf[t], 0
+            ])
             
     #----------------------------#
     #--- OPTIMIZATION METHODS ---# 
@@ -904,19 +939,6 @@ class EcDsaModel:
                      initial_adjustment_step=self.initial_adjustment_step, 
                      scenario=scenario)
 
-        # # For debt safeguard (FR-DE compromise) and if safeguard fullfilled before adjustment end,
-        # # save intermediate adjustement target because no further adjustment is reuqired after 4-year safeguard period
-        # if criterion == 'debt_safeguard' and self.edp_end + 4 < self.adjustment_end:
-        #     self.intermediate_adjustment_period = 4
-        #     self.intermediate_adjustment_step = (self.spb_bca[self.edp_end + 4] - self.spb_bca[self.edp_end]) / 4
-        #     self.spb_target = self.spb_bca[self.edp_end + 4]
-        #     self.project(spb_target=self.spb_target,
-        #                  initial_adjustment_period=self.initial_adjustment_period,
-        #                  initial_adjustment_step=self.initial_adjustment_step,
-        #                  intermediate_adjustment_period=self.intermediate_adjustment_period,
-        #                  intermediate_adjustment_step=self.intermediate_adjustment_step,                         
-        #                  scenario=scenario)
-            
         return self.spb_target
 
     def _deterministic_condition(self, criterion):
@@ -961,7 +983,7 @@ class EcDsaModel:
                                 spb_target, 
                                 initial_adjustment_period=0, 
                                 initial_adjustment_step=0.5,
-                                intermediate_adjustment_period=0,
+                                intermediate_adjustment_period=0, 
                                 intermediate_adjustment_step=0):
         """
         Apply the deficit resilience targets that sets min. annual spb adjustment if structural deficit exceeds 1.5%.
