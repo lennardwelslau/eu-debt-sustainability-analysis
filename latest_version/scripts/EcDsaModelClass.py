@@ -21,7 +21,7 @@
 # For comments and suggestions please contact lennard.welslau[at]bruegel[dot]org
 #
 # Author: Lennard Welslau
-# Updated: 2021-09-30 Preliminary version not for distribution.
+# Updated: 2023-12-21
 #
 #=========================================================================================#
 
@@ -36,9 +36,9 @@ sns.set_style('whitegrid')
 sns.set_palette('colorblind')
 
 class EcDsaModel:
-    #-------------------------#
-    #--- INIITIALIZE MODEL ---# 
-    #-------------------------#
+    #-----------------------------------------------------------------------------#
+    #----------------------------- INIITIALIZE MODEL -----------------------------# 
+    #-----------------------------------------------------------------------------#
     def __init__(self, 
                  country, # ISO code of country
                  start_year=2022, # start year of projection, first year is baseline value
@@ -134,9 +134,9 @@ class EcDsaModel:
         ## Clean data
         self._clean_data()
     
-    #-------------------------------#
-    #--- DATA METHODS (INTERNAL) ---#
-    #-------------------------------#  
+    #-----------------------------------------------------------------------------------#
+    #----------------------------- DATA METHODS (INTERNAL) -----------------------------#
+    #-----------------------------------------------------------------------------------#  
     def _import_data(self):
         """
         Import data from Excel input data file.
@@ -319,14 +319,8 @@ class EcDsaModel:
         """  
         for t, y in enumerate(range(self.start_year, self.end_year+1)):
             if y <= self.ameco_end_y:
-                # Change because 2023 Nov output gap working group does not feature nominal growth
-                # self.ng_bl[t] = self.df_output_gap_working_group.loc[self.df_output_gap_working_group['year'] == y, 'gdp_nom_pch'] 
                 self.ngdp_bl[t] = self.df_ameco.loc[self.df_ameco['year'] == y, 'ngdp'].values[0]
                 self.ng_bl[t] = (self.ngdp_bl[t] / self.df_ameco.loc[self.df_ameco['year'] == y-1, 'ngdp'].values[0] - 1) * 100
-            # See above
-            # elif y > self.ameco_end_y and y <= self.growth_projection_end:
-            #     self.ng_bl[t] = self.df_output_gap_working_group.loc[self.df_output_gap_working_group['year'] == y, 'gdp_nom_pch']
-            #     self.ngdp_bl[t] = self.ngdp_bl[t-1] * (1 + self.ng_bl[t] / 100)
             else:
                 self.ng_bl[t] = (1 + self.rg_bl[t] / 100) * (1 + self.pi[t] / 100) * 100 - 100
                 self.ngdp_bl[t] = self.ngdp_bl[t-1] * (1 + self.ng_bl[t] / 100)
@@ -442,9 +436,9 @@ class EcDsaModel:
         mask = np.isnan(self.share_lt_maturing)
         self.share_lt_maturing[mask] = np.interp(x[mask], x[~mask], self.share_lt_maturing[~mask])
 
-    #--------------------------#
-    #--- PROJECTION METHODS ---# 
-    #--------------------------#
+    #------------------------------------------------------------------------------#
+    #----------------------------- PROJECTION METHODS -----------------------------# 
+    #------------------------------------------------------------------------------#
     def project(self,
                 spb_target=None,
                 initial_adjustment_period=0, # length of first linear adjustment phase (EDP)
@@ -842,9 +836,9 @@ class EcDsaModel:
             - self.pb[t] + self.sf[t], 0
             ])
             
-    #----------------------------#
-    #--- OPTIMIZATION METHODS ---# 
-    #----------------------------#
+    #--------------------------------------------------------------------------------#
+    #----------------------------- OPTIMIZATION METHODS -----------------------------# 
+    #--------------------------------------------------------------------------------#
     def calculate_edp(self):
         """
         Find the number of periods needed to correct an excessive deficit if possible within adjustment period.
@@ -1050,10 +1044,9 @@ class EcDsaModel:
                             deficit_resilience_step=self.deficit_resilience_step
                             )
                 
-
-    #-------------------------#
-    #--- AUXILIARY METHODS ---#
-    #-------------------------#
+    #-----------------------------------------------------------------------------#
+    #----------------------------- AUXILIARY METHODS -----------------------------#
+    #-----------------------------------------------------------------------------#
 
     def df(self, *vars, all=False):
         """
