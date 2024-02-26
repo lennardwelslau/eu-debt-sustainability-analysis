@@ -21,7 +21,7 @@
 # For comments and suggestions please contact lennard.welslau[at]bruegel[dot]org
 #
 # Author: Lennard Welslau
-# Updated: 2023-12-22
+# Updated: 2024-02-26
 #
 #=========================================================================================#
 
@@ -39,23 +39,48 @@ class DsaModel:
     #-----------------------------------------------------------------------------#
     #----------------------------- INIITIALIZE MODEL -----------------------------# 
     #-----------------------------------------------------------------------------#
-    def __init__(self, 
-                 country, # ISO code of country
-                 start_year=2022, # start year of projection, first year is baseline value
-                 end_year=2053, # end year of projection
-                 adjustment_period=4, # number of years for linear spb_bca adjustment
-                 adjustment_start=2025, # start year of linear spb_bca adjustment
-                 inv_shock=False):
+    def __init__(
+            self, 
+            country, # ISO code of country
+            start_year=2022, # start year of projection, first year is baseline value
+            end_year=2053, # end year of projection
+            adjustment_period=4, # number of years for linear spb_bca adjustment
+            adjustment_start_year=2025, # start year of linear spb_bca adjustment
+            ageing_cost_period=10, # number of years for ageing cost adjustment after adjustment period
+            inv_shock=False,
+            inv_size=0.5,
+            inv_period=None,
+            inv_exception=False,
+            growth_policy=False,
+            growth_policy_effect=0,
+            growth_policy_cost=0,
+            growth_policy_period=1,
+            ):
 
         ## Initialize model parameters
         self.country = country
         self.start_year = start_year
         self.end_year = end_year
         self.T = self.end_year - start_year + 1
-        self.adjustment_period = adjustment_period 
-        self.adjustment_start = adjustment_start - start_year
-        self.adjustment_end = adjustment_start + adjustment_period - start_year - 1
+        self.adjustment_period = adjustment_period
+        self.adjustment_start = adjustment_start_year - start_year
+        self.adjustment_end_year = adjustment_start_year + adjustment_period - 1
+        self.adjustment_end = adjustment_start_year + adjustment_period - start_year - 1
+        self.ageing_cost_period = ageing_cost_period
         self.inv_shock = inv_shock
+        self.inv_size = inv_size
+        self.inv_space = inv_size
+        if inv_period is None:
+            self.inv_period = self.adjustment_period - 1
+        else:
+            self.inv_period = np.min([inv_period, self.adjustment_period])
+        self.inv_exception = inv_exception
+        self.growth_policy = growth_policy
+        self.growth_policy_effect = growth_policy_effect
+        self.growth_policy_cost = growth_policy_cost
+        self.growth_policy_period = growth_policy_period
+        self.growth_policy_cost_inflated = np.full(self.T, 0, dtype=np.float64) # cost of growth policy
+        self.growth_policy_cost_spb = np.full(self.T, 0, dtype=np.float64) # cost of growth policy as share of GDP
 
         ## Initialize model variables
         # GDP, growth, inflation
@@ -87,6 +112,7 @@ class DsaModel:
         self.spb_bl = np.full(self.T, np.nan, dtype=np.float64) # baseline primary balance over GDP
         self.spb_bca = np.full(self.T, np.nan, dtype=np.float64) # structural primary balance over GDP before cost of ageing
         self.spb = np.full(self.T, np.nan, dtype=np.float64) # structural primary balance over GDP
+        self.spb_bca_adjustment = np.full(self.T, np.nan, dtype=np.float64) # change in structural primary balance 
         self.pb_cyclical_adj = np.full(self.T, np.nan, dtype=np.float64) # primary balance over GDP adjusted for cyclical_component component
         self.pb_cyclical_ageing_adj = np.full(self.T, np.nan, dtype=np.float64) # primary balance over GDP adjusted for cyclical and ageing_component
         self.pb = np.full(self.T, np.nan, dtype=np.float64) # primary balance over GDP
@@ -96,6 +122,7 @@ class DsaModel:
         self.interest_st = np.full(self.T, np.nan, dtype=np.float64) # interest payment on short-term debt
         self.interest_lt = np.full(self.T, np.nan, dtype=np.float64) # interest payment on long-term debt
         self.interest = np.full(self.T, np.nan, dtype=np.float64) # interest payment on total debt
+        self.interest_ratio = np.full(self.T, np.nan, dtype=np.float64) # interest payment over GDP
         self.i_st = np.full(self.T, np.nan, dtype=np.float64) # market interest rate on short-term debt
         self.i_lt = np.full(self.T, np.nan, dtype=np.float64) # market interest rate on long-term debt
         self.amortization_st = np.full(self.T, np.nan, dtype=np.float64) # amortization of short-term debt
@@ -133,6 +160,9 @@ class DsaModel:
 
         ## Clean data
         self._clean_data()
+
+        # If investment shock with an exception for EDP and SPB, calculate deficit elasticity
+        # if self.inv_exception: self._calculate_deficit_elasticity()
     
     #-----------------------------------------------------------------------------------#
     #----------------------------- DATA METHODS (INTERNAL) -----------------------------#
@@ -196,7 +226,8 @@ class DsaModel:
         df_gov_rates = pd.read_excel('../data/InputData/deterministic_model_data.xlsx', sheet_name='bbg_data')
         self.df_2022_benchmark_rates = df_gov_rates.loc[df_gov_rates['year'] == 2022, ['ISO', '3M', '10Y']]
         self.df_2023_benchmark_rates = df_gov_rates.loc[df_gov_rates['year'] == 2023, ['ISO', '3M', '10Y']]
-        self.df_fwd_rates = df_gov_rates.loc[df_gov_rates['year'] == 2023, ['ISO', '3M10Y', '10Y10Y']]
+        self.df_2024_benchmark_rates = df_gov_rates.loc[df_gov_rates['year'] == 2024, ['ISO', '3M', '10Y']]
+        self.df_fwd_rates = df_gov_rates.loc[df_gov_rates['year'] == 2024, ['ISO', '3M10Y', '10Y10Y']]
         
         if self.country in ['BGR', 'CZE', 'DNK', 'HUN', 'POL', 'ROU', 'SWE']:
             try:
@@ -208,9 +239,11 @@ class DsaModel:
         
         self.fwd_rate_lt = self.df_fwd_rates.loc[(self.df_fwd_rates['ISO'] == self.country), '10Y10Y'].values[0]
         self.benchmark_rate_st_2022 = self.df_2022_benchmark_rates.loc[(self.df_2022_benchmark_rates['ISO'] == self.country), '3M'].values[0] 
-        self.benchmark_rate_st_2023 = self.df_2023_benchmark_rates.loc[(self.df_2023_benchmark_rates['ISO'] == self.country), '3M'].values[0]
+        self.benchmark_rate_st_2023 = self.df_2023_benchmark_rates.loc[(self.df_2023_benchmark_rates['ISO'] == self.country), '3M'].values[0]         
+        self.benchmark_rate_st_2024 = self.df_2024_benchmark_rates.loc[(self.df_2024_benchmark_rates['ISO'] == self.country), '3M'].values[0]
         self.benchmark_rate_lt_2022 = self.df_2022_benchmark_rates.loc[(self.df_2022_benchmark_rates['ISO'] == self.country), '10Y'].values[0]
         self.benchmark_rate_lt_2023 = self.df_2023_benchmark_rates.loc[(self.df_2023_benchmark_rates['ISO'] == self.country), '10Y'].values[0]
+        self.benchmark_rate_lt_2024 = self.df_2024_benchmark_rates.loc[(self.df_2024_benchmark_rates['ISO'] == self.country), '10Y'].values[0]
 
     def _import_inflation_data(self):
         """
@@ -252,6 +285,7 @@ class DsaModel:
         """
         self._clean_rgdp_pot()
         self._clean_rgdp()
+        if self.growth_policy: self._apply_growth_policy_effect()
         self._clean_output_gap()
         self._clean_pi()
         self._clean_ngdp()
@@ -273,7 +307,8 @@ class DsaModel:
             if y <= self.ameco_end_y:
                 self.rg_pot[t] = self.df_output_gap_working_group.loc[self.df_output_gap_working_group['year'] == y, 'gdp_pot_pch'].values[0]
                 self.rgdp_pot[t] = self.df_ameco.loc[self.df_ameco['year'] == y, 'gdp_pot'].values[0]
-            elif y > self.ameco_end_y and y <= self.growth_projection_end:
+            elif (y > self.ameco_end_y 
+                  and y <= self.growth_projection_end):
                 self.rg_pot[t] = self.df_output_gap_working_group.loc[self.df_output_gap_working_group['year'] == y, 'gdp_pot_pch'].values[0]
                 self.rgdp_pot[t] = self.rgdp_pot[t-1] * (1 + self.rg_pot[t] / 100)
             elif y > self.growth_projection_end:
@@ -297,6 +332,34 @@ class DsaModel:
         self.rg = np.copy(self.rg_bl)
         self.rgdp = np.copy(self.rgdp_bl)
 
+    def _apply_growth_policy_effect(self):
+        """
+        Apply growth enhancing policy to potential and real GDP.
+        """
+        for t in range(self.adjustment_start, self.T):
+            
+            # Calcualte increase of real potential gdp during policy period
+            if t in range(self.adjustment_start, self.adjustment_start + self.growth_policy_period):
+                rgdp_pot_annual_effect = (self.rgdp_pot[self.adjustment_start + self.growth_policy_period - 1] 
+                                          * (self.growth_policy_effect / 100) 
+                                          * (t - self.adjustment_start + 1) / self.growth_policy_period)
+
+                # Apply increase to rgdp
+                self.rgdp_pot[t] += rgdp_pot_annual_effect 
+                self.rgdp_bl[t] += rgdp_pot_annual_effect
+                self.rgdp[t] += rgdp_pot_annual_effect
+
+                # Recalculate implied growth rates
+                self.rg_pot[t] = (self.rgdp_pot[t] - self.rgdp_pot[t-1]) / self.rgdp_pot[t-1] * 100
+                self.rg_bl[t] = (self.rgdp_bl[t] - self.rgdp_bl[t-1]) / self.rgdp_bl[t-1] * 100
+                self.rg[t] = (self.rgdp[t] - self.rgdp[t-1]) / self.rgdp[t-1] * 100
+            
+            # Use default growth rates to project GDP after
+            else:
+                self.rgdp_pot[t] = self.rgdp_pot[t-1] * (1 + self.rg_pot[t] / 100) 
+                self.rgdp_bl[t] = self.rgdp_bl[t-1] * (1 + self.rg_bl[t] / 100) 
+                self.rgdp[t] = self.rgdp_bl[t-1] * (1 + self.rg[t] / 100) 
+        
     def _clean_output_gap(self):
         """
         Clean GDP gap. 
@@ -475,14 +538,12 @@ class DsaModel:
     #------------------------------------------------------------------------------#
     def project(self,
                 spb_target=None,
-                initial_adjustment_period=0, # length of first linear adjustment phase (EDP)
-                initial_adjustment_step=0.5, # annual step size of first linear adjustment phase
-                intermediate_adjustment_period=0, # length of second linear adjustment phase, not needed for current version
-                intermediate_adjustment_step=0, # annual step size of second linear adjustment phase, not needed for current version                
-                deficit_resilience_periods=None, # list of years during adjustment where minimum step size is enforced
-                post_adjustment_periods=None, # list of years after adjustment where minimum step size is enforced
-                deficit_resilience_step=0, # minimum step size enforced enforced by deficit resilience safeguard
-                scenario='main_adjustment' # scenario parameter, needed for DSA criteria
+                adjustment_steps=None, # list of annual adjustment steps during adjustment
+                edp_steps=None, # list of annual adjustment steps during EDP             
+                deficit_resilience_steps=None, # list of years during adjustment where minimum step size is enforced
+                post_adjustment_steps=None, # list of years after adjustment where minimum step size is enforced
+                scenario='main_adjustment', # scenario parameter, needed for DSA criteria
+                inv_shock=None, # investment shock
                 ): 
         """
         Project debt dynamics
@@ -492,54 +553,198 @@ class DsaModel:
         self._clean_iir()
 
         # Set spb_target 
-        if spb_target == None:
+        if (spb_target is None
+            and adjustment_steps is None):
             self.spb_target = self.spb_bca[self.adjustment_start-1]
-        else:                                    
+        elif (spb_target is None
+            and adjustment_steps is not None):
+            self.spb_target = self.spb_bca[self.adjustment_start-1] + adjustment_steps.sum()
+        else:  
             self.spb_target = spb_target
-
-        # Set initial_adjustment_period 
-        self.initial_adjustment_period = initial_adjustment_period
-        self.initial_adjustment_step = initial_adjustment_step
-        self.spb_initial_target = self.spb_bca[self.adjustment_start-1] + self.initial_adjustment_period * self.initial_adjustment_step
-        self.edp_end = self.adjustment_start - 1 + self.initial_adjustment_period
-
-        # Set intermediate_adjustment_period
-        self.intermediate_adjustment_period = intermediate_adjustment_period
-        self.intermediate_adjustment_step = intermediate_adjustment_step
-        self.spb_intermediate_target = self.spb_initial_target + self.intermediate_adjustment_period * self.intermediate_adjustment_step
         
-        # Check if deficit_resilience_periods is specified, if not, set to empty list
-        if isinstance(deficit_resilience_periods, np.ndarray):
-            self.deficit_resilience_periods = deficit_resilience_periods
+        # Set adjustment steps
+        if (adjustment_steps is None
+            and spb_target is not None):
+            self.adjustment_steps = np.full((self.adjustment_period,), (self.spb_target - self.spb_bca[self.adjustment_start-1]) / self.adjustment_period, dtype=np.float64)      
+        elif (adjustment_steps is None
+            and spb_target is None):
+            self.adjustment_steps = np.full((self.adjustment_period,), 0, dtype=np.float64)
         else:
-            self.deficit_resilience_periods = np.full((self.adjustment_period,), False, dtype=bool)
-        
-        # Check if post_adjustment_periods is specified, if not, set to empty list
-        if isinstance(post_adjustment_periods, np.ndarray):
-            self.post_adjustment_periods = post_adjustment_periods
+            self.adjustment_steps = adjustment_steps
+
+        # Set edp steps
+        if edp_steps is None:
+            self.edp_steps = np.full((self.adjustment_period,), np.nan, dtype=np.float64)
         else:
-            self.post_adjustment_periods = np.full((self.T - self.adjustment_end-1,), False, dtype=bool)
+            self.edp_steps = edp_steps
+
+        # Set deficit resilience steps
+        if deficit_resilience_steps is None:
+            self.deficit_resilience_steps = np.full((self.adjustment_period,), np.nan, dtype=np.float64)
+        else:
+            self.deficit_resilience_steps = deficit_resilience_steps
         
-        # Set deficit_resilience_step
-        self.deficit_resilience_step = deficit_resilience_step
-        
+        # Set post adjustment steps
+        if post_adjustment_steps is None:
+            self.post_adjustment_steps = np.full((self.T - self.adjustment_end-1,), 0, dtype=np.float64)
+        else:
+            self.post_adjustment_steps = post_adjustment_steps    
+
         # Set scenario parameter
         self.scenario = scenario
 
+        # Set investment shock parameter if defined
+        if inv_shock is not None: 
+            self.inv_shock = inv_shock
+
         ## Project debt dynamics
-        self._project_market_rate()
         self._project_net_expenditure_path()
+        self._project_market_rate()
         self._project_gdp()
         self._project_spb()
         self._project_pb()
         self._project_d()
-   
+
+    def _project_net_expenditure_path(self):
+        """
+        Project structural primary balance, excluding ageing cost
+        """
+
+        # If investment shock, adjust first and last adjustment step
+        if self.inv_shock: self._apply_inv_shock()
+
+        # Adjust path for EDP and deficit resilience steps
+        self._adjust_for_edp()
+        self._adjust_for_deficit_resilience()
+        self._apply_adjustment_steps()
+
+        # If lower_spb scenario, adjust path
+        if self.scenario == 'lower_spb': self._apply_lower_spb()
+
+        # If growth policy, adjust path
+        if self.growth_policy: self._calculate_growth_policy_cost()
+
+    def _adjust_for_edp(self):
+        """
+        Adjust linear path for minimum EDP adjustment steps 
+        """        
+        # Save copy of baseline adjustment steps 
+        self.adjustment_steps_baseline = np.copy(self.adjustment_steps)
+
+        # Apply EDP steps to adjustment steps
+        self.adjustment_steps[~np.isnan(self.edp_steps)] = np.where(
+            self.edp_steps[~np.isnan(self.edp_steps)] > self.adjustment_steps[~np.isnan(self.edp_steps)], 
+            self.edp_steps[~np.isnan(self.edp_steps)], 
+            self.adjustment_steps[~np.isnan(self.edp_steps)]
+            )
+                
+        # Identify periods that are after EDP and correct them for frontloading
+        if not np.isnan(self.edp_steps).all(): 
+            last_edp_index = np.where(~np.isnan(self.edp_steps))[0][-1] 
+        else: 
+            last_edp_index = 0
+        post_edp_index = np.arange(last_edp_index + 1, len(self.adjustment_steps))
+        self.diff_adjustment_baseline = np.sum(self.adjustment_steps_baseline - self.adjustment_steps)
+        offset_edp = self.diff_adjustment_baseline / len(post_edp_index) if len(post_edp_index) > 0 else 0
+        self.adjustment_steps[post_edp_index] += offset_edp
+
+    def _adjust_for_deficit_resilience(self):
+        """
+        Adjust linear path for minimum deficit resilience adjustment steps 
+        """
+
+        # Save copy of edp adjusted steps 
+        self.adjustment_steps_baseline = np.copy(self.adjustment_steps)
+
+        # Apply deficit resilience safeguard steps to adjustment steps
+        self.adjustment_steps[~np.isnan(self.deficit_resilience_steps)] = np.where(
+            self.deficit_resilience_steps[~np.isnan(self.deficit_resilience_steps)] > self.adjustment_steps[~np.isnan(self.deficit_resilience_steps)], 
+            self.deficit_resilience_steps[~np.isnan(self.deficit_resilience_steps)], 
+            self.adjustment_steps[~np.isnan(self.deficit_resilience_steps)]
+            )
+        
+        # Identify periods that are after EDP and deficit resilience and correct for frontloading
+        if not (np.isnan(self.edp_steps).all() 
+                and np.isnan(self.deficit_resilience_steps).all()): 
+            last_edp_deficit_resilience_index = np.where(~np.isnan(self.edp_steps) | ~np.isnan(self.deficit_resilience_steps))[0][-1] 
+        else: 
+            last_edp_deficit_resilience_index = 0
+        post_edp_deficit_resilience_index = np.arange(last_edp_deficit_resilience_index + 1, len(self.adjustment_steps))
+        self.diff_adjustment_baseline = np.sum(self.adjustment_steps_baseline - self.adjustment_steps)
+        self.offset_deficit_resilience = self.diff_adjustment_baseline / len(post_edp_deficit_resilience_index) if len(post_edp_deficit_resilience_index) > 0 else 0
+        self.adjustment_steps[post_edp_deficit_resilience_index] += self.offset_deficit_resilience
+
+    def _apply_adjustment_steps(self):
+        """
+        Project spb_bca
+        """
+        # Apply adjustment steps based on the current period
+        for t in range(self.adjustment_start, self.T):
+            if t in range(self.adjustment_start, self.adjustment_end + 1):
+                self.spb_bca[t] = self.spb_bca[t - 1] + self.adjustment_steps[t - self.adjustment_start]
+            else:
+                self.spb_bca[t] = self.spb_bca[t - 1] + self.post_adjustment_steps[t - self.adjustment_end - 1]
+            
+        # Save adjustment step size
+        self.spb_bca_adjustment[1:] = np.diff(self.spb_bca)
+
+    def _apply_lower_spb(self):
+        """
+        Apply lower_spb scenario
+        """
+        # If 4-year adjustment period, spb_bca decreases by 0.5 for 2 years after adjustment period, if 7-year for 3 years
+        lower_spb_adjustment_period = int(np.floor(self.adjustment_period/2))
+        for t in range(self.adjustment_end + 1, self.T):
+            if t <= self.adjustment_end + lower_spb_adjustment_period:
+                self.spb_bca[t] -= 0.5 / lower_spb_adjustment_period * (t - self.adjustment_end)
+            else:
+                self.spb_bca[t] = self.spb_bca[t-1]
+    
+    def _calculate_growth_policy_cost(self):
+        """
+        Calculate cost of growth policy
+        """
+        for t in range(self.adjustment_start, self.T):
+            
+            # During growth policy period, cost is phased in
+            if t < self.adjustment_start + self.growth_policy_period:
+                self.growth_policy_cost_inflated[t] = self.growth_policy_cost * (t - self.adjustment_start + 1) / self.growth_policy_period
+            
+            # After growth policy period, cost stays constant
+            else:
+                self.growth_policy_cost_inflated[t] = self.growth_policy_cost
+            
+            # Inflate costs and calculate as share of NGDP
+            for pi_value in self.pi[:t]:
+                self.growth_policy_cost_inflated[t] *= 1 + pi_value / 100
+
+            self.growth_policy_cost_spb[t] = self.growth_policy_cost_inflated[t] / self.ngdp[t] * 100
+
+    def _apply_inv_shock(self):
+        """
+        Apply inv_shock scenario that reduces spb_bca by 0.5% of GDP from first to penultimate adjustment period.
+        Used for counterfactual analysis to check how much investment would be allowed under various specifications.
+        """
+        # Investment shock size faces lower bound of EDP and deficit resilience safeguard
+        if (not np.isnan(self.edp_steps[0]) 
+            or not np.isnan(self.deficit_resilience_steps[0])):
+            self.inv_space = np.max([
+                np.min([
+                    self.adjustment_steps[0] - np.nan_to_num(self.edp_steps[0]),
+                    self.adjustment_steps[0] - np.nan_to_num(self.deficit_resilience_steps[0])
+                ]),
+                0
+            ])
+        self.adjustment_steps[0] -= self.inv_size
+        if self.inv_period < self.adjustment_period:
+            self.adjustment_steps[self.inv_period] += self.inv_size
+
     def _project_market_rate(self):
         """
         Project market rate data, needs to be in projection method because of scenario parameter.
-        Uses BBG forward rates upo to T+10, then linearly interpolates to long-term values.
+        Uses BBG forward rates up to T+10, then linearly interpolates to long-term values.
         """
-        # Clean vectors in case of repeated projection with differen scenarios
+        # Clean vectors in case of repeated projection with different scenarios
         self.i_st = np.full(self.T, np.nan) 
         self.i_lt = np.full(self.T, np.nan) 
 
@@ -567,6 +772,10 @@ class DsaModel:
         self.i_st[2023-self.start_year] = self.benchmark_rate_st_2023 
         self.i_lt[2023-self.start_year] = self.benchmark_rate_lt_2023 
 
+        # Set 2024 value
+        self.i_st[2024-self.start_year] = self.benchmark_rate_st_2024
+        self.i_lt[2024-self.start_year] = self.benchmark_rate_lt_2024
+
         # Interpolate missing values
         x_st = np.arange(len(self.i_st))
         mask_st = np.isnan(self.i_st)
@@ -584,90 +793,6 @@ class DsaModel:
         """
         self.i_st[self.adjustment_end+1:] += 0.5
         self.i_lt[self.adjustment_end+1:] += 0.5
-
-    def _project_net_expenditure_path(self):
-        """
-        Project structural primary balance, excluding ageing cost
-        """
-        self._calculate_adjustment_steps()
-        self._calculate_post_adjustment_steps()
-        self._apply_adjustment_steps()
-
-        if self.scenario == 'lower_spb': self._apply_lower_spb()
-        if self.inv_shock: self._apply_inv_shock()
-
-    def _calculate_adjustment_steps(self):
-        """
-        Calculate steps for adjustment period
-        """
-        # Calculate adjustment period
-        self.adjustment_steps_baseline = np.full(self.adjustment_period, np.nan, dtype=np.float64)
-        self.adjustment_steps = np.full(self.adjustment_period, np.nan, dtype=np.float64)
-        
-        # Set initial, intermediate, and remaining steps
-        self.adjustment_steps_baseline[:self.initial_adjustment_period] = self.initial_adjustment_step
-        self.adjustment_steps_baseline[self.initial_adjustment_period:self.initial_adjustment_period + self.intermediate_adjustment_period] = self.intermediate_adjustment_step
-        self.adjustment_steps_baseline[self.initial_adjustment_period + self.intermediate_adjustment_period:] = (self.spb_target - self.spb_intermediate_target) / (self.adjustment_period - self.initial_adjustment_period - self.intermediate_adjustment_period)
-
-        # Apply deficit resilience safeguard
-        self.adjustment_steps[~self.deficit_resilience_periods] = self.adjustment_steps_baseline[~self.deficit_resilience_periods]
-        self.adjustment_steps[self.deficit_resilience_periods] = np.where(self.deficit_resilience_step > self.adjustment_steps_baseline[self.deficit_resilience_periods], self.deficit_resilience_step, self.adjustment_steps[self.deficit_resilience_periods])
-
-        # Calculate difference between baseline and defcit resilience steps
-        deficit_resilience_diff = np.sum(self.adjustment_steps_baseline - self.adjustment_steps)
-
-        # Final period exception for deficit resilience if inv_shock and sufficient frontloaded adjustment to offset exception
-        if self.inv_shock and self.deficit_resilience_periods[-1] and self.adjustment_steps[-1] == self.deficit_resilience_step and deficit_resilience_diff < -self.deficit_resilience_step:
-            self.adjustment_steps[-1] -= self.deficit_resilience_step
-
-        # Identify periods that are after debt safeguard and deficit resilience periods to correct frontloading
-        final_adjustment_periods = (
-                    np.arange(self.adjustment_period) >= self.initial_adjustment_period + self.intermediate_adjustment_period) & (
-                    np.arange(self.adjustment_period) > next((i for i, value in reversed(list(enumerate(self.deficit_resilience_periods))) if value), 0))
-        
-        # Calculate correction for difference applied to remaining periods
-        self.final_adjustment_step = deficit_resilience_diff / np.sum(final_adjustment_periods)
-        self.adjustment_steps[final_adjustment_periods] = self.adjustment_steps[final_adjustment_periods] + self.final_adjustment_step
-
-    def _calculate_post_adjustment_steps(self):
-        """
-        Calculate steps for post adjustment period
-        """
-        # Calculate adjustment period
-        self.post_adjustment_steps = np.full(self.T - self.adjustment_end-1, 0, dtype=np.float64)
-
-        # Apply deficit resilience safeguard
-        self.post_adjustment_steps[self.post_adjustment_periods] = self.deficit_resilience_step
-
-    def _apply_adjustment_steps(self):
-        """
-        Project spb_bca
-        """
-        # Apply adjustment steps based on the current period
-        for t in range(self.adjustment_start, self.T):
-            if t in range(self.adjustment_start, self.adjustment_end + 1):
-                self.spb_bca[t] = self.spb_bca[t - 1] + self.adjustment_steps[t - self.adjustment_start]
-            else:
-                self.spb_bca[t] = self.spb_bca[t - 1] + self.post_adjustment_steps[t - self.adjustment_end - 1]
-
-    def _apply_lower_spb(self):
-        """
-        Apply lower_spb scenario
-        """
-        # If 4-year adjustment period, spb_bca decreases by 0.5 for 2 years after adjustment period, if 7-year for 3 years
-        lower_spb_adjustment_period = int(np.floor(self.adjustment_period/2))
-        for t in range(self.adjustment_end + 1, self.T):
-            if t <= self.adjustment_end + lower_spb_adjustment_period:
-                self.spb_bca[t] = self.spb_bca[t] - 0.5 / lower_spb_adjustment_period * (t - self.adjustment_end)
-            else:
-                self.spb_bca[t] = self.spb_bca[t-1]
-
-    def _apply_inv_shock(self):
-        """
-        Apply inv_shock scenario that reduces spb_bca by size of inv_shock from first to penultimate adjustment period.
-        Used for counterfactual analysis to check how much investment would be allowed under various specifications.
-        """
-        self.spb_bca[self.adjustment_start:self.adjustment_end] -= self.inv_shock
 
     def _project_gdp(self):
         """
@@ -720,15 +845,20 @@ class DsaModel:
         """
         Project structural primary balance
         """
-        for t in range(self.T):
+        for t in range(1, self.T):
             
             # Ageing cost adjustments are accounted for by spb adjustment during the adjustment period
             if t <= self.adjustment_end: 
                 self.spb[t] = self.spb_bca[t]
 
-            if t > self.adjustment_end: 
+            # After adjustment period ageing costs affect the SPB for duration of "ageing_cost_period"
+            elif t > self.adjustment_end and t <= self.adjustment_end + self.ageing_cost_period: 
                 self.ageing_component[t] = - (self.ageing_cost[t] - self.ageing_cost[self.adjustment_end]) 
                 self.spb[t] = self.spb_bca[t] + self.ageing_component[t]
+            
+            # After ageing cost period, SPB is baseline
+            elif t > self.adjustment_end + self.ageing_cost_period: 
+                self.spb[t] = self.spb[t-1]
 
             # Total SPB for calcualtion of structural deficit
             self.SPB[t] = self.spb[t] / 100 * self.ngdp[t]
@@ -814,6 +944,7 @@ class DsaModel:
         self.interest_st[t] = self.D_st[t-1] * self.i_st[t-1] / 100 # interest payments on newly issued short-term debt
         self.interest_lt[t] = self.iir_lt[t] / 100 * self.D_lt[t-1] # lt interest is t-1 lt debt times implicit lt interest rate
         self.interest[t] = self.interest_st[t] + self.interest_lt[t] # interest payments on newly issued debt and outstanding legacy debt
+        self.interest_ratio[t] = self.interest[t] / self.ngdp[t] * 100
 
     def _calculate_amortization(self, t):
         """
@@ -872,46 +1003,162 @@ class DsaModel:
     #--------------------------------------------------------------------------------#
     #----------------------------- OPTIMIZATION METHODS -----------------------------# 
     #--------------------------------------------------------------------------------#
-    def calculate_edp(self):
+    def find_edp(self, spb_target=None):
         """
         Find the number of periods needed to correct an excessive deficit if possible within adjustment period.
         """
         # Project baseline and check if deficit is excessive
-        self.project(initial_adjustment_period = 0, initial_adjustment_step = 0)
-        
-        # If deficit excessive, increase spb by 0.5 annually until deficit below 3% if edp_var is spb
-        if np.all(self.ob[self.adjustment_start-1:self.adjustment_start+1] < -3):
-            self.initial_adjustment_period = 1
-            self.initial_adjustment_step = 0
-            self.initial_adjustment_step = 0.5
-            self.project(initial_adjustment_period=self.initial_adjustment_period, 
-                         initial_adjustment_step=self.initial_adjustment_step
-                         )
+        if spb_target is None:
+            self.spb_target = None
+        else:
+            self.spb_target = spb_target
+        self.project(spb_target=spb_target)
+
+        # Define EDP threshold, set to 3% of GDP unless investment shock
+        self.edp_target = np.full(self.adjustment_period, -3, dtype=float)
+        if self.inv_exception: self.edp_target[:np.min([self.inv_period,self.adjustment_period+1])] -= 0.5
+
+        # If deficit excessive, increase spb by 0.5 annually until deficit below 3% 
+        if self.ob[self.adjustment_start] < self.edp_target[0]:
             
-            # Enter loop that increases EDP periods until deficit <= 3
-            while self.ob[self.adjustment_start+self.initial_adjustment_period-1] < -3:
-                self.initial_adjustment_period += 1
-                self.project(initial_adjustment_period=self.initial_adjustment_period, 
-                             initial_adjustment_step=self.initial_adjustment_step
-                             )
-                
-                # To avoid non-optimal overshooting the 3% target, we end the EDP in the year penultimat adjustment period
-                if self.initial_adjustment_period >= self.adjustment_period-1: 
-                    while self.ob[self.adjustment_end-1] < -3:
-                        self.initial_adjustment_step += 0.001
-                        self.project(spb_target=self.spb_initial_target,
-                                     initial_adjustment_period=self.initial_adjustment_period, 
-                                     initial_adjustment_step=self.initial_adjustment_step
-                                     )
-                        
-        return self.initial_adjustment_period
-    
-    def find_spb_deterministic(self, criterion='main_adjustment', bounds=(-10, 10), steps=[0.01, 0.0001]):
+            # Set start indices for spb and pb adjustment parts of EDP
+            self.edp_spb_index = 0
+            self.edp_sb_index = 3
+
+            # Calculate EDP adjustment steps for spb, sb, and final periods
+            self._calculate_edp_spb()
+            self._calculate_edp_sb()
+            self._calculate_edp_end(spb_target = spb_target)
+
+        # If deficit not excessive, set EDP period to 0
+        else:
+            self.edp_period = 0
+            self.edp_end = self.adjustment_start - 1 
+                    
+    def _save_edp_period(self):
         """
-        Find the primary balance that ensures a decline in the debt ratio after the adjustment period.
+        Saves EDP period and end period
         """
-        self._prepare_optimization(criterion)
+        self.edp_period = np.where(~np.isnan(self.edp_steps))[0][-1] + 1
+        self.edp_end = self.adjustment_start + self.edp_period
+
+    def _calculate_edp_spb(self):
+        """
+        Calculate EDP adjustment steps ensuring minimum strucutral primary balance adjustment
+        """
+        # Loop for SPB part of EDP: min. 0.5 spb adjustment while deficit > 3 and in spb adjustmet period
+        while (self.ob[self.adjustment_start + self.edp_spb_index] < self.edp_target[self.edp_spb_index]
+                and self.edp_spb_index < self.edp_sb_index):
+            # Set EDP step to 0.5
+            self.edp_steps[self.edp_spb_index] = 0.5
+
+            # Project using last periods SPB as target, move to next period
+            self.project(
+                spb_target=self.spb_target,
+                edp_steps=self.edp_steps
+                )
+            self.edp_spb_index += 1
+            self._save_edp_period()
+
+    def _calculate_edp_sb(self):
+        """
+        Calculate EDP adjustment steps ensuring minimum strucutral balance adjustment
+        """
+        # Loop for SB balance part of EDP: min. 0.5 ob adjustment while deficit > 3 and before last period
+        while (self.ob[self.adjustment_start + self.edp_sb_index] < self.edp_target[self.edp_sb_index]
+                and self.edp_sb_index+1 < self.adjustment_period):
+
+            # Initiate sb step at current adjustment_step value, increase by 0.001
+            self.edp_steps[self.edp_sb_index] = self.adjustment_steps[self.edp_sb_index]
+            self.edp_steps[self.edp_sb_index] += 0.001
+            
+            # Project using last periods SPB as target, move to next period
+            self.project(
+                spb_target=self.spb_target,
+                edp_steps=self.edp_steps
+                )
+            self._save_edp_period()
+
+            # If sb adjustment reaches min. 0.5, move to next period
+            if self.sb[self.adjustment_start + self.edp_sb_index] - self.sb[self.adjustment_start + self.edp_sb_index - 1] >= 0.5:
+                self.edp_sb_index += 1
+
+    def _calculate_edp_end(self, spb_target):
+        """
+        Calculate EDP adjustment steps or SPB target ensuring deficit below 3% at adjustment end
+        """   
+        # If EDP lasts until penultimate adjustmet period, increase EDP steps to ensure deficit < 3
+        if self.edp_period == self.adjustment_period:
+            while self.ob[self.adjustment_end] <= self.edp_target[-1]:           
+
+                # Aim for linear adjustment path by increasing smallest EDP steps first
+                min_edp_steps = np.min(self.edp_steps[~np.isnan(self.edp_steps)])
+                min_edp_indices = np.where(self.edp_steps == min_edp_steps)[0]
+                self.edp_steps[min_edp_indices] += 0.001
+                self.project(
+                    spb_target=self.spb_target,
+                    edp_steps=self.edp_steps
+                    )
+                self._save_edp_period()
         
+        # If last EDP period has deficit < 3, we do not impose additional adjustment
+        if self.ob[self.adjustment_start-1 + self.edp_period] >= self.edp_target[-1]:
+            self.edp_steps[self.edp_sb_index:] = np.nan
+            self._save_edp_period()
+        
+        # If no spb_target was specified, calculate to ensure deficit < 3 until adjustment end
+        if spb_target is None:
+            print('No SPB target specified, calculating to ensure deficit < 3')
+            while np.any(self.ob[self.edp_end:self.adjustment_end+1] <= self.edp_target[-1]):
+                self.spb_target += 0.001
+                self.project(spb_target=self.spb_target, edp_steps=self.edp_steps)   
+
+    def find_spb_deterministic(self, criterion, bounds=(-10, 10), steps=[0.01, 0.0001]):
+        """
+        Find the primary balance that ensures complience with deterministic criteria
+        """
+        # Check if input parameter correctly specified
+        assert criterion in [
+            None, 
+            'main_adjustment', 
+            'lower_spb', 
+            'financial_stress', 
+            'adverse_r_g', 
+            'deficit_reduction', 
+            'debt_safeguard', 
+            ], 'Unknown deterministic criterion'
+
+        # Set scenario parameter
+        if criterion in [None, 'main_adjustment', 'debt_safeguard']:
+            self.scenario = 'main_adjustment'
+        else:
+            self.scenario = criterion
+
+        # Precalculate EDP for debt safeguard if not specified and call optimizer
+        if not hasattr(self, 'edp_steps'): 
+            if criterion == 'debt_safeguard':
+                print('Precalculating EDP steps for debt safeguard')
+                self.find_edp()
+            else:
+                self.edp_steps = None
+        
+        # Run deterministic optimization
+        return self._deterministic_optimization(criterion=criterion, bounds=bounds, steps=steps)
+
+    def _deterministic_optimization(self, criterion, bounds, steps): #TODO find error 
+        """
+        Main loop of optimizer for debt safeguard
+        """
+        # If debt safeguard and EDP lasts until penultimate adjustment year, debt safeguard satisfied by default
+        if (criterion == 'debt_safeguard'
+            and self.edp_period >= self.adjustment_period - 1):
+            self.spb_target = self.spb_bca[self.edp_end-1]
+            self.project(
+                spb_target=self.spb_target,
+                edp_steps=self.edp_steps
+                )
+            return self.spb_target
+
         # Initialize spb_target to the lower bound
         spb_target = bounds[0]  
 
@@ -919,169 +1166,229 @@ class DsaModel:
         while spb_target <= bounds[1]:
             try:
                 # Project the model with the current spb_target
-                self.project(spb_target=spb_target, 
-                             initial_adjustment_period=self.initial_adjustment_period, 
-                             initial_adjustment_step=self.initial_adjustment_step, 
-                             scenario=self.scenario)
+                self._get_adjustment_steps(criterion=criterion, spb_target=spb_target)
+                self.project(
+                    edp_steps=self.edp_steps,
+                    adjustment_steps=self.adjustment_steps,
+                    scenario=self.scenario
+                    )
                 
                 # If condition is met, enter nested loop and decrease spb_target in small steps
                 if self._deterministic_condition(criterion=criterion):  
-                    while self._deterministic_condition(criterion=criterion) and spb_target >= bounds[0]:
-                        previous_spb_target = spb_target
+                    while (self._deterministic_condition(criterion=criterion) 
+                           and spb_target >= bounds[0]):
+                        current_spb_target = spb_target
                         spb_target -= steps[1]
-                        self.project(spb_target=spb_target, 
-                                     initial_adjustment_period=self.initial_adjustment_period, 
-                                     initial_adjustment_step=self.initial_adjustment_step, 
-                                     scenario=self.scenario)
+                        self._get_adjustment_steps(criterion=criterion, spb_target=spb_target)
+                        self.project(
+                            edp_steps=self.edp_steps,
+                            adjustment_steps=self.adjustment_steps,
+                            scenario=self.scenario
+                            )
                     break
 
                 # If condition is not met, increase spb_target in large steps
-                previous_spb_target = spb_target
+                current_spb_target = spb_target
                 spb_target += steps[0]
 
             except:
-                raise Exception(f'No solution found for {criterion}')
+                raise #Exception(f'No solution found for {criterion}')
             
         # If spb_target exceeds upper bound, raise exception    
         if spb_target > bounds[1] - steps[1]:
-            raise Exception(f'No solution found for {criterion}')
+            raise #Exception(f'No solution found for {criterion}')
 
-        # Save last valid spb_target as optimal spb and project project with target
-        self.spb_target = previous_spb_target
-        self.project(spb_target=self.spb_target, 
-                     initial_adjustment_period=self.initial_adjustment_period, 
-                     initial_adjustment_step=self.initial_adjustment_step, 
-                     scenario=self.scenario)
+        # Return last valid spb_target as optimal spb and project with target
+        self.spb_target = current_spb_target
+        spb_target -= steps[1]
+        self._get_adjustment_steps(criterion=criterion, spb_target=spb_target)
 
-        return self.spb_target
+        return self.spb_bca[self.adjustment_end]
 
-    def _prepare_optimization(self, criterion):
+    def _get_adjustment_steps(self, criterion, spb_target):
         """
-        Set parameters and define scenario for deterministic optimization.
+        Get adjustment steps for debt safeguard after EDP
         """
-        # Check if input parameter correctly specified
-        if criterion not in [None, 'main_adjustment', 'lower_spb', 'financial_stress', 'adverse_r_g', 'deficit_reduction', 'debt_safeguard']:
-            raise ValueError("Deterministic criterion must be 'main_adjustment', 'lower_spb', 'financial_stress', 'adverse_r_g', 'deficit_reduction', or 'debt_safeguard'")
-
-        # Specify scenario parameter
-        if criterion in [None, 'main_adjustment', 'debt_safeguard']:
-            self.scenario = 'main_adjustment'
+        # If debt safeguard, apply adjustment to period after EDP
+        if criterion == 'debt_safeguard':
+            num_steps = self.adjustment_period - self.edp_period
+            step_size = (spb_target - self.spb_bca[self.edp_end-1]) / num_steps
+            non_edp_steps = np.full(num_steps, step_size)
+            edp_steps_nonan = self.edp_steps[~np.isnan(self.edp_steps)]
+            self.adjustment_steps = np.concatenate([edp_steps_nonan, non_edp_steps])
+        
+        # Otherwise apply adjustment to all periods
         else:
-            self.scenario = criterion
-
-        # Calculate EDP periods for debt safeguard if not already specified
-        if criterion == 'debt_safeguard' and not hasattr(self, 'initial_adjustment_period'): self.calculate_edp()
-        
-        # If EDP spans to penultimate period, debt safeguard is satisfied by default
-        if criterion == 'debt_safeguard' and self.initial_adjustment_period >= self.adjustment_period-1:
-            return self.spb_bca[self.adjustment_start - 1 + self.initial_adjustment_period]
-        
-        # Set initial adjustment period and step if not specified
-        if not hasattr(self, 'initial_adjustment_period'):
-           self.initial_adjustment_period = 0
-           self.initial_adjustment_step = 0.5
+            num_steps = self.adjustment_period
+            step_size = (spb_target - self.spb_bca[self.adjustment_start-1]) / num_steps
+            self.adjustment_steps = np.full(num_steps, step_size)
 
     def _deterministic_condition(self, criterion):
         """
         Defines deterministic criteria and checks if they are met.
         """
-        # Debt decline from adjustment end to 10 years after adjustment end
-        debt_decline_criterion = np.all(np.diff(self.d[self.adjustment_end:self.adjustment_end+11]) < 0) or self.d[self.adjustment_end+10] <= 60 
-        
-        # Deficit criterion for <3% deficit for 10 years after adjustment end
-        deficit_reduction_criterion = np.all(self.ob[self.adjustment_end:self.adjustment_end+11] >= -3)
-
-        # Safeguard criterion is 1 percent avrg. annual debt decline if debt > 90, 0.5 if > 60 from edp_end to adjustment_end
-        if self.d[self.adjustment_start - 1] > 90:
-            self.debt_safeguard_decline = 1
+        if (criterion == 'main_adjustment' 
+            or criterion == 'lower_spb' 
+            or criterion == 'financial_stress' 
+            or criterion == 'adverse_r_g'):
+            return self._debt_decline_criterion()
+        elif criterion == 'deficit_reduction':
+            return self._deficit_reduction_criterion()
+        elif criterion == 'debt_safeguard':
+            return self._debt_safeguard_criterion()
         else:
-            self.debt_safeguard_decline = 0.5
-        self.debt_safeguard_period = self.adjustment_end - self.edp_end
-        debt_safeguard_criterion = self.d[self.edp_end] - self.d[self.adjustment_end] >= self.debt_safeguard_decline * self.debt_safeguard_period
-        
-        # Check if conditions for criterion is met
-        if self.d[self.adjustment_start - 1] <= 60 and self.ob[self.adjustment_start - 1] >= -3 and criterion != 'deficit_reduction':
-            raise Exception("Only 'deficit_reduction' criterion for countries with debt ratio <= 60% and deficit <= 3%")
-        elif criterion in ['main_adjustment', 'lower_spb', 'financial_stress', 'adverse_r_g'] and debt_decline_criterion:
-            return True
-        elif criterion == 'deficit_reduction' and deficit_reduction_criterion:
-            return True
-        elif criterion == 'debt_safeguard' and debt_safeguard_criterion:
-            return True
-        else:
-            return False        
+            return False
 
-    def find_spb_deficit_resilience(self, 
-                                spb_target, 
-                                initial_adjustment_period=0, 
-                                initial_adjustment_step=0.5,
-                                intermediate_adjustment_period=0, 
-                                intermediate_adjustment_step=0):
+    def _debt_decline_criterion(self):
+        """
+        Checks the debt decline criterion from adjustment end to 10 years after adjustment end.
+        """
+        return (np.all(np.diff(self.d[self.adjustment_end:self.adjustment_end+11]) < 0) 
+                or self.d[self.adjustment_end+10] <= 60)
+
+    def _deficit_reduction_criterion(self):
+        """
+        Checks the deficit reduction criterion for <3% deficit for 10 years after adjustment end.
+        """
+        return np.all(self.ob[self.adjustment_end:self.adjustment_end+11] >= -3)
+
+    def _debt_safeguard_criterion(self):
+        """
+        Checks the debt safeguard criterion.
+        """
+        debt_safeguard_decline = 1 if self.d[self.adjustment_start - 1] > 90 else 0.5
+
+        # Exception for investment shock
+        if self.inv_exception:
+            self._calculate_d_non_inv()
+            
+            # If EDP period is 0, need debt ratio from 2024, pre-investment
+            if self.edp_period == 0:
+
+                return (self.d[self.edp_end] - self.d_non_inv[-1] 
+                        >= debt_safeguard_decline * (self.adjustment_end - self.edp_end))
+            
+            # If EDP period is not 0, need debt ratio from EDP period, post-investment
+            else:
+                return (self.d_non_inv[self.edp_period] - self.d_non_inv[-1] 
+                        >= debt_safeguard_decline * (self.adjustment_end - self.edp_end))
+        
+        # Non-investment criteria with baseline debt ratio
+        else:
+            return (self.d[self.edp_end] - self.d[self.adjustment_end] 
+                    >= debt_safeguard_decline * (self.adjustment_end - self.edp_end))
+
+    def _calculate_d_non_inv(self):
+        """
+        Calculate the non-investment shock debt ratio.
+        """
+        # Calculate yearly investment based on nominal GDP
+        D_inv = np.cumsum(0.005 * self.ngdp[self.adjustment_start:self.adjustment_start+self.inv_period])
+
+        # Extend D_inv to adjustment_end+1
+        D_inv = np.concatenate([D_inv, np.full(self.adjustment_period - self.inv_period, D_inv[-1])])
+
+        # Add interest costs based on implicit rate in given year
+        D_inv += D_inv * self.iir[self.adjustment_start:self.adjustment_end+1] / 100
+
+        # Calculate ratio
+        self.d_non_inv = ((self.D[self.adjustment_start:self.adjustment_end+1] - D_inv)
+                    / self.ngdp[self.adjustment_start:self.adjustment_end+1]) * 100 
+
+    def find_spb_deficit_resilience(self):
         """
         Apply the deficit resilience targets that sets min. annual spb adjustment if structural deficit exceeds 1.5%.
         """
-        # Initialize deficit_resilience_periods and spb_post_adjustment_period
-        self.deficit_resilience_periods = np.full((self.adjustment_period,), False, dtype=bool)
-        self.post_adjustment_periods = np.full((self.T - self.adjustment_end-1,), False, dtype=bool)
+        # Initialize deficit_resilience_steps and spb_post_adjustment_period
+        self.deficit_resilience_steps = np.full((self.adjustment_period,), np.nan, dtype=np.float64)
+        self.post_adjustment_steps = np.full((self.T - self.adjustment_end-1,), 0, dtype=np.float64)
 
-        # Define structural deficit target and minimum steps
-        structural_deficit_target = 1.5
+        # Define structural deficit target and correct for investment shock 
+        self.deficit_resilience_target = np.full(self.adjustment_period, -1.5, dtype=float)
+        self.post_adjustment_target = -1.5
+        if self.inv_exception: self.deficit_resilience_target[:np.min([self.inv_period,self.adjustment_period+1])] -= 0.5
+
+        # Define deficit resilience step size
         if self.adjustment_period == 4: 
-            deficit_resilience_step = 0.4
+            self.deficit_resilience_step = 0.4
         elif self.adjustment_period == 7:
-            deficit_resilience_step = 0.25
+            self.deficit_resilience_step = 0.25
         
         # Project baseline
-        self.project(spb_target=spb_target, 
-            initial_adjustment_period=initial_adjustment_period, 
-            initial_adjustment_step=initial_adjustment_step, 
-            intermediate_adjustment_period=intermediate_adjustment_period,
-            intermediate_adjustment_step=intermediate_adjustment_step,
-            deficit_resilience_periods=self.deficit_resilience_periods,
-            deficit_resilience_step=deficit_resilience_step
+        self.project(
+            spb_target=self.spb_target, 
+            edp_steps=self.edp_steps,
+            deficit_resilience_steps=self.deficit_resilience_steps
             )
-
+                
+        # If exception for the investment shock is specified, apply deficit resilience from second year only
+        self.deficit_resilience_start = self.adjustment_start
+        
         # Loop for adjustment period violations of deficit resilience
-        self._deficit_resilience_loop_adjustment(structural_deficit_target)    
+        self._deficit_resilience_loop_adjustment()    
 
         # Loop for post-adjustment period violations of deficit resilience
-        self._deficit_resilience_loop_post_adjustment(structural_deficit_target)
+        self._deficit_resilience_loop_post_adjustment()
 
         return self.spb_bca[self.adjustment_end]
     
-    def _deficit_resilience_loop_adjustment(self, structural_deficit_target):
+    def _deficit_resilience_loop_adjustment(self):
         """
         Loop for adjustment period violations of deficit resilience
         """
-        for t in range(self.adjustment_start, self.adjustment_end+1):
-            if -self.sb[t] > structural_deficit_target and self.adjustment_steps[t - self.adjustment_start] < self.deficit_resilience_step - 1e-8: # 1e-8 tolerance for floating point errors
-                self.deficit_resilience_periods[t - self.adjustment_start] = True
-                self.project(spb_target=self.spb_target, 
-                            initial_adjustment_period=self.initial_adjustment_period, 
-                            initial_adjustment_step=self.initial_adjustment_step, 
-                            intermediate_adjustment_period=self.intermediate_adjustment_period,
-                            intermediate_adjustment_step=self.intermediate_adjustment_step,
-                            deficit_resilience_periods=self.deficit_resilience_periods,
-                            deficit_resilience_step=self.deficit_resilience_step
-                            )
-
-    def _deficit_resilience_loop_post_adjustment(self, structural_deficit_target):
+        for t in range(self.deficit_resilience_start, self.adjustment_end+1):
+            if (self.sb[t] <= self.deficit_resilience_target[t - self.adjustment_start] and self.adjustment_steps[t - self.adjustment_start] < self.deficit_resilience_step - 1e-8): # 1e-8 tolerance for floating point errors
+                self.deficit_resilience_steps[t - self.adjustment_start] = self.adjustment_steps[t - self.adjustment_start]
+                while (self.sb[t] <= self.deficit_resilience_target[t - self.adjustment_start] 
+                    and self.deficit_resilience_steps[t - self.adjustment_start] < self.deficit_resilience_step - 1e-8): # 1e-8 tolerance for floating point errors
+                    self.deficit_resilience_steps[t - self.adjustment_start] += 0.001
+                    self.project(
+                        spb_target=self.spb_target, 
+                        edp_steps=self.edp_steps,
+                        deficit_resilience_steps=self.deficit_resilience_steps
+                        )
+                
+    def _deficit_resilience_loop_post_adjustment(self):
         """
         Loop for post-adjustment period violations of deficit resilience
         """
         for t in range(self.adjustment_end+1, self.adjustment_end+11):
-            if -self.sb[t] > structural_deficit_target and self.post_adjustment_steps[t - self.adjustment_end-1] < self.deficit_resilience_step - 1e-8: # 1e-8 tolerance for floating point errors
-                self.post_adjustment_periods[t - self.adjustment_end-1] = True
-                self.project(spb_target=self.spb_target, 
-                            initial_adjustment_period=self.initial_adjustment_period, 
-                            initial_adjustment_step=self.initial_adjustment_step, 
-                            intermediate_adjustment_period=self.intermediate_adjustment_period,
-                            intermediate_adjustment_step=self.intermediate_adjustment_step,
-                            deficit_resilience_periods=self.deficit_resilience_periods,
-                            post_adjustment_periods=self.post_adjustment_periods,
-                            deficit_resilience_step=self.deficit_resilience_step
-                            )
-                
+            while (self.sb[t] <= self.post_adjustment_target 
+                    and self.post_adjustment_steps[t - self.adjustment_end-1] < self.deficit_resilience_step - 1e-8): # 1e-8 tolerance for floating point errors
+                self.post_adjustment_steps[t - self.adjustment_end-1] += 0.001
+                self.project(
+                    spb_target=self.spb_target, 
+                    edp_steps=self.edp_steps,
+                    deficit_resilience_steps=self.deficit_resilience_steps,
+                    post_adjustment_steps=self.post_adjustment_steps
+                    )
+
+    # def _calculate_deficit_elasticity(self):   
+    #     """
+    #     Calculate elasticity of overall (structural) balance to strucutral porimary balance
+    #     """
+    #     # Set adjustment steps to baseline and get ob and sb
+    #     adjustment_steps = np.full(self.adjustment_period, 0, dtype=float)
+    #     self.inv_shock = False
+    #     self.project(adjustment_steps=adjustment_steps)
+    #     ob_bl = self.ob[self.adjustment_start:self.adjustment_end+1].copy()
+    #     sb_bl = self.sb[self.adjustment_start:self.adjustment_end+1].copy()
+
+    #     # Increase adjustment by investment shock size and get ob and sb
+    #     adjustment_steps[0] -= self.inv_size
+    #     self.project(adjustment_steps=adjustment_steps)
+    #     ob_adj = self.ob[self.adjustment_start:self.adjustment_end+1].copy()
+    #     sb_adj = self.sb[self.adjustment_start:self.adjustment_end+1].copy()
+
+    #     # Calculate and safe difference in each adjustment period
+    #     self.ob_inv_elasticity = ob_adj - ob_bl
+    #     self.sb_inv_elasticity = sb_adj - sb_bl
+
+    #     # Reset vars
+    #     self.adjustment_steps = None
+    #     self.spb_target = None
+    #     self.inv_shock = True
+
     #-----------------------------------------------------------------------------#
     #----------------------------- AUXILIARY METHODS -----------------------------#
     #-----------------------------------------------------------------------------#
@@ -1094,14 +1401,21 @@ class DsaModel:
         """
         # if no variables specified, return spb, ob, d
         if not vars and all==False:
-            vars = ['spb_bca', 'ob', 'd']
+            vars = ['d', 'ob', 'sb', 'spb_bca', 'spb_bca_adjustment']
         
         # if all option True specified, return all variables
         elif not vars and all==True:
-            vars = ['spb_bca', # ageing-cost adjusted structural primary balance
+            vars = ['d', # debt ratio
+                    'spb_bca', # ageing-cost adjusted structural primary balance
+                    'spb_bca_adjustment', # adjustment to ageing-cost adjusted structural primary balance
                     'spb', # structural primary balance
+                    'pb', # primary balance
                     'ob', # overall balance
-                    'd', # debt ratio
+                    'sb', # structural balance
+                    'ageing_component', # ageing component of primary balance
+                    'cyclical_component', # cyclical component of primary balance
+                    'interest_ratio', # interest payments as share of GDP
+                    'ageing_cost', # ageing cost
                     'rg', # real GDP growth
                     'rg_pot', # potential real GDP growth
                     'ng',  # nominal GDP growth
@@ -1115,19 +1429,16 @@ class DsaModel:
                     'iir_lt', # implicit long-term interest rate
                     'iir', # implicit interest rate
                     'sf', # stock flow adjustment
-                    'ageing_cost', # ageing cost
-                    'ageing_component', # ageing component of primary balance
-                    'cyclical_component', # cyclical component of primary balance
-                    'pb', # primary balance
-                    'pb_cyclical_adj', # cyclically adjusted primary balance
-                    'pb_cyclical_ageing_adj', # cyclically and ageing-cost adjusted primary balance
                     'D', # debt level
                     'D_lt_inst', # long-term instirutional debt level 
                     'D_st', # short-term debt level
                     'D_lt', # long-term debt level
                     'amortization', # amortization
                     'amortization_lt', # long-term amortization
-                    'amortization_lt_inst' # long-term institutional amortization
+                    'amortization_lt_inst', # long-term institutional amortization
+                    'interest', # interest payments
+                    'interest_lt', # long-term interest payments
+                    'interest_st', # short-term interest payments
                     ]
         
         # If given dictionary as input, convert to list of variables and variable names
@@ -1145,10 +1456,12 @@ class DsaModel:
 
         var_values = [getattr(self, var) if isinstance(var, str) else var for var in vars]
 
-        df = pd.DataFrame({vars[i]: var for i, var in enumerate(var_values)},
-                        index=range(self.start_year, self.end_year + 1))
-        if var_names:
-            df.columns = var_names
+        df = pd.DataFrame(
+            {vars[i]: var for i, var in enumerate(var_values)},
+            index=range(self.start_year, self.end_year + 1)
+            )
+        
+        if var_names: df.columns = var_names
         df.reset_index(names='y', inplace=True)
         df.reset_index(names='t', inplace=True)
         df.set_index(['t', 'y'], inplace=True)
