@@ -680,6 +680,9 @@ class StochasticDsaModel(DsaModel):
         else:
             print('Deficit resilience safeguard not binding after adjustment period')
 
+        # Update binding SPB target
+        self.binding_spb_target = self.spb_bca[self.adjustment_end]
+
         if self.save_df: self.df_dict['deficit_resilience'] = self.df(all=True)
 
     def find_deficit_prob(self):
