@@ -13,7 +13,7 @@
 # For comments and suggestions please contact lennard.welslau[at]bruegel[dot]org
 #
 # Author: Lennard Welslau
-# Updated: 2024-02-26
+# Updated: 2023-12-22
 #
 #=========================================================================================#
 
@@ -107,7 +107,7 @@ class StochasticDsaModel(DsaModel):
     #----------------------------------------------------------------------------------#
     #------------------------------- SIMULATION METHODS -------------------------------# 
     #----------------------------------------------------------------------------------#     
-    def simulate(self, N=100000): # Set to 1 mio. for final version
+    def simulate(self, N=200000): # Set to 1 mio. for final version
         """
         Simulate the stochastic model.
         """
@@ -181,6 +181,7 @@ class StochasticDsaModel(DsaModel):
         # Iterate over each year
         for t in range(1, self.T_stochastic+1):
             q = t * 4
+
             # Calculate the weight for each quarter based on the current year and m_res_lt
             weight = t / self.m_res_lt
 
@@ -189,7 +190,7 @@ class StochasticDsaModel(DsaModel):
 
             # Sum the shocks (N, T, num_quarters, num_variables) across the selected quarters
             aggregated_shocks = weight * np.sum(
-                self.shocks_sim_draws[:, q-q_to_sum-1 : q+1, -3], axis=(1))
+                self.shocks_sim_draws[:, q - q_to_sum - 1 : q+1, -3], axis=(1))
 
             # Assign the aggregated shocks to the corresponding year
             self.long_term_interest_rate_shocks[:, t-1] = aggregated_shocks
@@ -594,18 +595,18 @@ class StochasticDsaModel(DsaModel):
         """
         # Check if EDP binding, run DSA for periods after EDP and project new path under baseline assumptions
         self.find_edp(spb_target=self.binding_spb_target)
-        self._run_dsa(criterion=self.binding_criterion)
-        self.project(
-            spb_target=self.binding_spb_target, 
-            edp_steps=self.edp_steps,
-            scenario=None
-            )
         if (not np.isnan(self.edp_steps[0]) 
             and self.edp_steps[0] > self.adjustment_steps[0]): 
             self.edp_binding = True 
         else: 
             self.edp_binding = False
         if self.edp_binding: 
+            self._run_dsa(criterion=self.binding_criterion)
+            self.project(
+                spb_target=self.binding_spb_target, 
+                edp_steps=self.edp_steps,
+                scenario=None
+                )
             print(f'SPB* after applying EDP: {self.spb_bca[self.adjustment_end]}, EDP period: {self.edp_period}')
         else: 
             print(f'EDP not binding')
@@ -672,15 +673,14 @@ class StochasticDsaModel(DsaModel):
             print(f'SPB* after deficit resilience: {self.spb_bca[self.adjustment_end]}')
             self.spb_target_dict['deficit_resilience'] = self.spb_bca[self.adjustment_end]
         else:
-            print('Deficit resilience safeguard not binding during adjustment period')            
+            print('Deficit resilience safeguard not binding during adjustment period')
         
         if np.any([~np.isnan(self.post_adjustment_steps)]):
             print(f'SPB post-adjustment: {self.spb[self.adjustment_end+10]}')
             self.spb_target_dict['post_adjustment'] = self.spb[self.adjustment_end+10]
         else:
             print('Deficit resilience safeguard not binding after adjustment period')
-
-        # Update binding SPB target
+        
         self.binding_spb_target = self.spb_bca[self.adjustment_end]
 
         if self.save_df: self.df_dict['deficit_resilience'] = self.df(all=True)
@@ -706,7 +706,7 @@ class StochasticDsaModel(DsaModel):
 
         # Set exchange rate and primary balance shock to zero
         self.df_shocks[['exchange_rate', 'primary_balance']] = 0
-
+        
         # Draw quarterly shocks
         self._draw_shocks()
 

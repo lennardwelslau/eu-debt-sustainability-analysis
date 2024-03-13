@@ -21,7 +21,7 @@
 # For comments and suggestions please contact lennard.welslau[at]bruegel[dot]org
 #
 # Author: Lennard Welslau
-# Updated: 2024-02-26
+# Updated: 2023-12-22
 #
 #=========================================================================================#
 
@@ -80,7 +80,7 @@ class DsaModel:
         self.growth_policy_cost = growth_policy_cost
         self.growth_policy_period = growth_policy_period
         self.growth_policy_cost_inflated = np.full(self.T, 0, dtype=np.float64) # cost of growth policy
-        self.growth_policy_cost_spb = np.full(self.T, 0, dtype=np.float64) # cost of growth policy as share of GDP
+        self.growth_policy_cost_ratio = np.full(self.T, 0, dtype=np.float64) # cost of growth policy as share of GDP
 
         ## Initialize model variables
         # GDP, growth, inflation
@@ -206,9 +206,9 @@ class DsaModel:
         """
         Import output gap working group data from Excel input data file.
         """
-        self.df_output_gap_working_group = pd.read_excel('../data/InputData/deterministic_model_data.xlsx', sheet_name='output_gap_working_group')
-        self.df_output_gap_working_group = self.df_output_gap_working_group.loc[self.df_output_gap_working_group['ISO'] == self.country]
-        self.growth_projection_end = self.df_output_gap_working_group['year'].max()
+        self.df_ogwg = pd.read_excel('../data/InputData/deterministic_model_data.xlsx', sheet_name='output_gap_working_group')
+        self.df_ogwg = self.df_ogwg.loc[self.df_ogwg['ISO'] == self.country]
+        self.ogwg_projection_end = self.df_ogwg['year'].max()
 
     def _import_com_data(self):
         """
@@ -301,31 +301,46 @@ class DsaModel:
     def _clean_rgdp_pot(self):
         """
         Clean baseline real potential growth.
-        Uses T+2 from Ameco for totals, T+5 for growth rates then use commission august real gdp growth rates
         """
+
         for t, y in enumerate(range(self.start_year, self.end_year+1)):
+            
+            # Values up to t+2 are from AMECO
             if y <= self.ameco_end_y:
-                self.rg_pot[t] = self.df_output_gap_working_group.loc[self.df_output_gap_working_group['year'] == y, 'gdp_pot_pch'].values[0]
                 self.rgdp_pot[t] = self.df_ameco.loc[self.df_ameco['year'] == y, 'gdp_pot'].values[0]
-            elif (y > self.ameco_end_y 
-                  and y <= self.growth_projection_end):
-                self.rg_pot[t] = self.df_output_gap_working_group.loc[self.df_output_gap_working_group['year'] == y, 'gdp_pot_pch'].values[0]
-                self.rgdp_pot[t] = self.rgdp_pot[t-1] * (1 + self.rg_pot[t] / 100)
-            elif y > self.growth_projection_end:
+                if t > 0: 
+                    self.rg_pot[t] = (self.rgdp_pot[t] - self.rgdp_pot[t-1]) / self.rgdp_pot[t-1] * 100
+
+            # Values from t+3 to t+5 are from OGWG
+            elif y <= self.ogwg_projection_end:
+                self.rgdp_pot[t] = self.df_ogwg.loc[self.df_ogwg['year'] == y, 'gdp_pot'].values[0]
+                self.rg_pot[t] = (self.rgdp_pot[t] - self.rgdp_pot[t-1]) / self.rgdp_pot[t-1] * 100
+            
+            # From t+4 projectiosn are based on long run COM estimates
+            elif y > self.ogwg_projection_end:
                 self.rg_pot[t] = self.df_real_growth.loc[y]
                 self.rgdp_pot[t] = self.rgdp_pot[t-1] * (1 + self.rg_pot[t] / 100)
 
     def _clean_rgdp(self):
         """
         Clean baseline real growth. 
-        Uses T+2 from Ameco for totals, T+5 for growth rates, then equal to potential growth.
         """        
         for t, y in enumerate(range(self.start_year, self.end_year+1)):
-            self.rg_bl[t] = self.df_real_growth.loc[y] 
             
+            # Values up to t+2 are from AMECO
             if y <= self.ameco_end_y:
                 self.rgdp_bl[t] = self.df_ameco.loc[self.df_ameco['year'] == y, 'rgdp'].values[0]
-            elif y > self.ameco_end_y:
+                if t > 0: 
+                    self.rg_bl[t] = (self.rgdp_bl[t] - self.rgdp_bl[t-1]) / self.rgdp_bl[t-1] * 100
+
+            # Values from t+3 to t+5 are from OGWG
+            elif y <= self.ogwg_projection_end:
+                self.rgdp_bl[t] = self.df_ogwg.loc[self.df_ogwg['year'] == y, 'gdp_real'].values[0]
+                self.rg_bl[t] = (self.rgdp_bl[t] - self.rgdp_bl[t-1]) / self.rgdp_bl[t-1] * 100
+
+            # From t+4 projectiosn are based on long run COM estimates
+            elif y > self.ogwg_projection_end:
+                self.rg_bl[t] = self.df_real_growth.loc[y]
                 self.rgdp_bl[t] = self.rgdp_bl[t-1] * (1 + self.rg_bl[t] / 100)
             
         # Set initial values to baseline
@@ -704,6 +719,7 @@ class DsaModel:
         """
         Calculate cost of growth policy
         """
+        
         for t in range(self.adjustment_start, self.T):
             
             # During growth policy period, cost is phased in
@@ -714,11 +730,11 @@ class DsaModel:
             else:
                 self.growth_policy_cost_inflated[t] = self.growth_policy_cost
             
-            # Inflate costs and calculate as share of NGDP
-            for pi_value in self.pi[:t]:
-                self.growth_policy_cost_inflated[t] *= 1 + pi_value / 100
+            # Inflate costs with nominal growth rate and calculate as share of NGDP
+            for ng_value in self.ng[:t]:
+                self.growth_policy_cost_inflated[t] *= 1 + ng_value / 100
 
-            self.growth_policy_cost_spb[t] = self.growth_policy_cost_inflated[t] / self.ngdp[t] * 100
+            self.growth_policy_cost_ratio[t] = self.growth_policy_cost_inflated[t] / self.ngdp[t] * 100
 
     def _apply_inv_shock(self):
         """
