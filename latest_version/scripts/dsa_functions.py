@@ -64,7 +64,6 @@ def save_results(results_dict, output_path, file_note=''):
     """
     _save_spbs(results_dict, output_path, file_note)
     _save_dfs(results_dict, output_path, file_note)
-    _save_ameco(results_dict, output_path, file_note)
 
 def _save_spbs(results_dict, output_path, file_note):
     """
@@ -124,18 +123,6 @@ def _save_dfs(results_dict, output_path, file_note):
                     sheet_name = f'{country}_{adjustment_period}_{scenario}'[:31] # limit sheet_name length to 31 characters
                     df = results_dict[country][adjustment_period]['dfs'][scenario]
                     df.to_excel(writer, sheet_name=sheet_name)
-
-def _save_ameco(results_dict, output_path, file_note):
-    """
-    Saves ameco 2024 data for easy access.
-    """
-    df_ameco = pd.DataFrame()
-    for country in results_dict.keys():
-        df = pd.read_excel(f'../data/InputData/ameco_projections.xlsx', sheet_name=country)
-        df['country'] = country
-        df = df.loc[(df['year'] == 2024), ['country', 'd', 'ngdp', 'fb', 'spb']] 
-        df_ameco = pd.concat([df_ameco, df])
-    df_ameco.to_excel(f'{output_path}/ameco_2024_{file_note}.xlsx', index=False)
 
 def plot_annex_charts(country_code_dict, results_dict, output_path, file_note):
     """
