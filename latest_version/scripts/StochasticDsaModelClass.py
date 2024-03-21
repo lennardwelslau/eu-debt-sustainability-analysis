@@ -36,8 +36,8 @@ class StochasticDsaModel(DsaModel):
     #------------------------------------------------------------------------------------#
     def __init__(self, 
                 country, # ISO code of country
-                start_year=2022, # start year of projection, first year is baseline value
-                end_year=2053, # end year of projection
+                start_year=2023, # start year of projection, first year is baseline value
+                end_year=2023+30, # end year of projection
                 adjustment_period=4, # number of years for linear spb_bca adjustment
                 adjustment_start_year=2025, # start year of linear spb_bca adjustment
                 ageing_cost_period=10, # number of years for ageing cost adjustment
@@ -186,11 +186,11 @@ class StochasticDsaModel(DsaModel):
             weight = t / self.m_res_lt
 
             # Determine the number of quarters to sum based on the current year and m_res_lt
-            q_to_sum = np.min([q, maturity_quarters])
+            q_to_sum = np.min([q - 1, maturity_quarters])
 
             # Sum the shocks (N, T, num_quarters, num_variables) across the selected quarters
             aggregated_shocks = weight * np.sum(
-                self.shocks_sim_draws[:, q - q_to_sum - 1 : q+1, -3], axis=(1))
+                self.shocks_sim_draws[:, q - q_to_sum - 1 : q, -3], axis=(1))
 
             # Assign the aggregated shocks to the corresponding year
             self.long_term_interest_rate_shocks[:, t-1] = aggregated_shocks
@@ -239,11 +239,11 @@ class StochasticDsaModel(DsaModel):
             weight = t / self.m_res_lt
 
             # Determine the number of years to sum based on the current year and m_res_lt
-            t_to_sum = np.min([t, maturity_years])
+            t_to_sum = np.min([t - 1, maturity_years])
 
             # Sum the shocks (N, T, num_variables) across the selected years
             aggregated_shocks = weight * np.sum(
-                self.shocks_sim_draws[:, t-t_to_sum-1 : t+1, -3], axis=(1))
+                self.shocks_sim_draws[:, t-t_to_sum-1 : t, -3], axis=(1))
 
             # Assign the aggregated shocks to the corresponding year
             self.long_term_interest_rate_shocks[:, t-1] = aggregated_shocks
