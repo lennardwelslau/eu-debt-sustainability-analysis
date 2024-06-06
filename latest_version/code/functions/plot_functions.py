@@ -18,7 +18,6 @@ from functions import *
 
 def plot_annex_charts(
         results_dict,
-        country_code_dict,
         folder_name, 
         save_svg=False, 
         save_png=True
@@ -30,7 +29,7 @@ def plot_annex_charts(
     c) Debt simulations
     """
     annex_chart_dict = _calc_annex_charts(results_dict)
-    _create_annex_charts(country_code_dict, annex_chart_dict, folder_name, save_svg, save_png)
+    _create_annex_charts(annex_chart_dict, folder_name, save_svg, save_png)
 
 def _calc_annex_charts(results_dict):
     """
@@ -90,7 +89,7 @@ def _calc_annex_charts(results_dict):
         
     return annex_chart_dict
     
-def _create_annex_charts(country_code_dict, annex_chart_dict, folder_name, save_svg=False, save_png=True):
+def _create_annex_charts(annex_chart_dict, folder_name, save_svg=False, save_png=True):
     """
     Plots and saves annex charts.
     """
@@ -103,7 +102,7 @@ def _create_annex_charts(country_code_dict, annex_chart_dict, folder_name, save_
     for country in annex_chart_dict.keys():
         # Create a figure with two rows, one for each adjustment period
         fig, axs = plt.subplots(2, 3, figsize=(15, 10))
-        fig.suptitle(f'{country_code_dict[country]}', fontsize=18)
+        fig.suptitle(f'{get_country_name(country)}', fontsize=18)
 
         # Loop over adjustment periods
         for row, adjustment_period in enumerate(annex_chart_dict[country].keys()):
@@ -168,11 +167,11 @@ def _create_annex_charts(country_code_dict, annex_chart_dict, folder_name, save_
         fig.subplots_adjust(top=0.93)
 
         # Export charts
-        if save_svg == True: plt.savefig(f'../output/{folder_name}/charts/{country_code_dict[country]}.svg', format='svg', bbox_inches='tight')
-        if save_png == True: plt.savefig(f'../output/{folder_name}/charts/{country_code_dict[country]}.png', dpi=300, bbox_inches='tight')
+        if save_svg == True: plt.savefig(f'../output/{folder_name}/charts/{get_country_name(country)}.svg', format='svg', bbox_inches='tight')
+        if save_png == True: plt.savefig(f'../output/{folder_name}/charts/{get_country_name(country)}.png', dpi=300, bbox_inches='tight')
         plt.show()
 
-def plot_inv(country_code_dict, results_dict, folder_name, nrows=4, ncols=3, save_svg=False, save_png=True):
+def plot_inv(country_codes, results_dict, folder_name, nrows=4, ncols=3, save_svg=False, save_png=True):
     """
     Plots investment shock counterfactual scenario plots given paths of baseline and investment case
     """
@@ -180,7 +179,7 @@ def plot_inv(country_code_dict, results_dict, folder_name, nrows=4, ncols=3, sav
     tab10_palette = sns.color_palette('tab10')
 
     fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=(4*ncols, 3*nrows))
-    for i, country in enumerate(country_code_dict.keys()):
+    for i, country in enumerate(country_codes):
         
         # Load dataframes
         df_bl = results_dict[country][7]['df_dict']['binding'].loc[1:19][['spb', 'ob', 'd', 'ngdp']]
@@ -215,7 +214,7 @@ def plot_inv(country_code_dict, results_dict, folder_name, nrows=4, ncols=3, sav
         # Set labels
         axs[row,col].set_ylabel('Balance', fontsize=14)
         axs2.set_ylabel('Debt', fontsize=14)
-        axs[row,col].set_title(country_code_dict[country], fontsize=18)
+        axs[row,col].set_title(get_country_name(country), fontsize=18)
 
         # turn of grid for axs2
         axs2.grid(False)

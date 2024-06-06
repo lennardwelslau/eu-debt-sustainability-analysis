@@ -736,7 +736,7 @@ class DsaModel:
                     self.sf[t] = self.sf[10] - (t - 10) * self.sf[10] / 14
 
             # For Greece stock-flow is based on deferal of ESM/EFSF interest payments
-            if self.country == 'GRC':
+            elif self.country == 'GRC':
 
                 # Stock flow is 5.4% in 2022
                 if t == 0:

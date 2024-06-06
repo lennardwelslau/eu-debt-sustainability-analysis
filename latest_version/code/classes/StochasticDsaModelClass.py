@@ -733,8 +733,8 @@ class StochasticDsaModel(DsaModel):
         # Save results and print update
         if np.any([~np.isnan(self.post_adjustment_steps)]):
             print(f'SPB post-adjustment: {self.spb[self.adjustment_end+10]}')
-            self.spb_target_dict['post_adjustment'] = self.spb[self.adjustment_end+10]
-            self.pb_target_dict['post_adjustment'] = self.pb[self.adjustment_end+10]
+            self.spb_target_dict['deficit_resilience_post_adjustment'] = self.spb[self.adjustment_end+10]
+            self.pb_target_dict['deficit_resilience_post_adjustment'] = self.pb[self.adjustment_end+10]
         else:
             print('Deficit resilience safeguard not binding after adjustment period')
         
