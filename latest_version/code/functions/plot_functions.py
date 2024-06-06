@@ -1,8 +1,3 @@
-# Functions accompanying the Jupyter Notebook main for the reproduction of the 
-# results of the Bruegel Working Paper "A Quantitative Evaluation of the European 
-# Commission´s Fiscal Governance Proposal" by Zsolt Darvas, Lennard Welslau, and 
-# Jeromin Zettelmeyer (2023). Updated: 2024-04-16 Preliminary version not for distribution.
-
 # Import libraries and modules
 import numpy as np
 import pandas as pd
