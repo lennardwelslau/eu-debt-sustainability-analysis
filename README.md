@@ -8,7 +8,7 @@ For the latest version of the model, including an application of rules agreed on
 
 All input data are saved in the "data/InputData" folder. For details on data sources, see the "SOURCES.xlsx" file in the data folder.
 
-A previous version of the code that can be used to reproduce the results in our original working paper can be found in the "sep23_working_paper_replication_files" folder.
+A previous version of the code that can be used to reproduce the results in our original working paper can be found in the "sep23_working_paper" folder.
 
 External packages used include numpy, pandas, matplotlib, scipy, and numba.
 
