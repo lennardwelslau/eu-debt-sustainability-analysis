@@ -1236,7 +1236,9 @@ class DsaModel:
         Loop for adjustment period violations of deficit resilience
         """
         for t in range(self.deficit_resilience_start, self.adjustment_end + 1):
-            if (self.sb[t] <= self.deficit_resilience_target[t - self.adjustment_start] and self.adjustment_steps[t - self.adjustment_start] < self.deficit_resilience_step - 1e-8):  # 1e-8 tolerance for floating point errors
+            if ((self.d[t] > 60 or self.ob[t] < -3)
+                and self.sb[t] <= self.deficit_resilience_target[t - self.adjustment_start] 
+                and self.adjustment_steps[t - self.adjustment_start] < self.deficit_resilience_step - 1e-8):  # 1e-8 tolerance for floating point errors
                 self.deficit_resilience_steps[t - self.adjustment_start] = self.adjustment_steps[t - self.adjustment_start]
                 while (self.sb[t] <= self.deficit_resilience_target[t - self.adjustment_start]
                        and self.deficit_resilience_steps[t - self.adjustment_start] < self.deficit_resilience_step - 1e-8):  # 1e-8 tolerance for floating point errors
@@ -1291,15 +1293,17 @@ class DsaModel:
         Loop for post-adjustment period violations of deficit resilience
         """
         for t in range(self.adjustment_end + 1, self.adjustment_end + 11):
-            while (self.sb[t] <= self.post_adjustment_target
-                    and self.post_adjustment_steps[t - self.adjustment_end - 1] < self.deficit_resilience_step - 1e-8):  # 1e-8 tolerance for floating point errors
-                self.post_adjustment_steps[t - self.adjustment_end - 1] += 0.001
-                self.project(
-                    spb_target=self.spb_target,
-                    edp_steps=self.edp_steps,
-                    deficit_resilience_steps=self.deficit_resilience_steps,
-                    post_adjustment_steps=self.post_adjustment_steps
-                )
+            if ((self.d[t] > 60 or self.ob[t] < -3)
+                and self.sb[t] <= self.post_adjustment_target):
+                while (self.sb[t] <= self.post_adjustment_target
+                        and self.post_adjustment_steps[t - self.adjustment_end - 1] < self.deficit_resilience_step - 1e-8):  # 1e-8 tolerance for floating point errors
+                    self.post_adjustment_steps[t - self.adjustment_end - 1] += 0.001
+                    self.project(
+                        spb_target=self.spb_target,
+                        edp_steps=self.edp_steps,
+                        deficit_resilience_steps=self.deficit_resilience_steps,
+                        post_adjustment_steps=self.post_adjustment_steps
+                    )
     
 # ========================================================================================= #
 #                                   AUXILIARY METHODS                                       #

@@ -704,10 +704,10 @@ class StochasticDsaModel(DsaModel):
         """ 
         Apply deficit resilience safeguard after binding scenario.
         """
-        # For countries with high deficit, find long term SPB target that brings and keeps deficit below 1.5%
-        if (self.ob[self.adjustment_start-1] < -3
-            or self.d[self.adjustment_start-1] > 60): 
-            self.find_spb_deficit_resilience()
+        # For countries with high deficit, find SPB target that brings and keeps deficit below 1.5%
+        if (np.any(self.d[self.adjustment_start-1:self.adjustment_end+1] > 60)
+            or np.any(self.ob[self.adjustment_start-1:self.adjustment_end+1] < -3)):
+                self.find_spb_deficit_resilience()
                 
         # Save results and print update
         if np.any([~np.isnan(self.deficit_resilience_steps)]):
@@ -726,14 +726,15 @@ class StochasticDsaModel(DsaModel):
         Apply deficit resilience safeguard for post adjustment period.
         """
         # For countries with high deficit, find long term SPB target that brings and keeps deficit below 1.5%
-        if (self.ob[self.adjustment_start-1] < -3
-            or self.d[self.adjustment_start-1] > 60): 
+        if (np.any(self.d[self.adjustment_end+1:] > 60)
+            or np.any(self.ob[self.adjustment_end+1:] < -3)):
             self.find_spb_deficit_resilience_post_adjustment()
         
         # Save results and print update
         if np.any([~np.isnan(self.post_adjustment_steps)]):
             print(f'SPB post-adjustment: {self.spb[self.adjustment_end+10]}')
             self.spb_target_dict['deficit_resilience_post_adjustment'] = self.spb[self.adjustment_end+10]
+            self.spb_target_dict['deficit_resilience_post_adjustment_bca'] = self.spb_bca[self.adjustment_end+10]
             self.pb_target_dict['deficit_resilience_post_adjustment'] = self.pb[self.adjustment_end+10]
         else:
             print('Deficit resilience safeguard not binding after adjustment period')

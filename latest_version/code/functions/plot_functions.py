@@ -96,7 +96,7 @@ def _create_annex_charts(annex_chart_dict, folder_name, save_svg=False, save_png
     # Loop over countries
     for country in annex_chart_dict.keys():
         # Create a figure with two rows, one for each adjustment period
-        fig, axs = plt.subplots(2, 3, figsize=(15, 10))
+        fig, axs = plt.subplots(2, 3, figsize=(14, 9))
         fig.suptitle(f'{get_country_name(country)}', fontsize=18)
 
         # Loop over adjustment periods
@@ -117,18 +117,19 @@ def _create_annex_charts(annex_chart_dict, folder_name, save_svg=False, save_png
 
                 # Plot df_interest_ageing_growth
                 df_interest_ageing_growth = annex_chart_dict[country][adjustment_period]['df_interest_ageing_growth']
-                df_interest_ageing_growth.plot(ax=axs[row, 0], lw=2.5, alpha=0.9, secondary_y=['Ageing costs'])
+                df_interest_ageing_growth.plot(ax=axs[row, 0], lw=2.5, alpha=0.9, secondary_y=['Implicit interest rate', 'Nominal GDP growth'])
                 lines = axs[row, 0].get_lines() + axs[row, 0].right_ax.get_lines()
-                axs[row, 0].legend(lines, [l.get_label() for l in lines], loc='lower right', fontsize=12)
+                axs[row, 0].legend(lines, [l.get_label() for l in lines], loc='best', fontsize=10)
+                
 
                 # Plot df_debt_chart
                 df_debt_chart = annex_chart_dict[country][adjustment_period]['df_debt_chart']
                 df_debt_chart.plot(lw=2.5, ax=axs[row, 1])
-                axs[row, 1].legend(loc='best', fontsize=12)
+                axs[row, 1].legend(loc='best', fontsize=10)
 
                 # Plot df_fanchart
                 df_fanchart = annex_chart_dict[country][adjustment_period]['df_fanchart']
-
+                
                 for i in range(3):
                     # Add grey fill for adjustment period
                     axs[row, i].axvspan(df_fanchart.index[1], df_fanchart.index[1+adjustment_period], alpha=0.3, color='grey')
@@ -138,10 +139,16 @@ def _create_annex_charts(annex_chart_dict, folder_name, save_svg=False, save_png
                     axs[row, i].set_xlabel('')
                     axs[row, i].tick_params(axis='both', which='major', labelsize=12)
                     axs[row, i].xaxis.set_major_formatter(FormatStrFormatter('%d'))
-                    axs[row, i].yaxis.set_major_formatter(FormatStrFormatter('%d'))
+                    # Check if there are duplicates in the first digits
+                    first_digits = [np.floor(tick) for tick in axs[row, i].get_yticks()]
+                    if len(first_digits) != len(set(first_digits)):
+                        axs[row, i].yaxis.set_major_formatter(FormatStrFormatter('%.1f'))
+                    else:
+                        axs[row, i].yaxis.set_major_formatter(FormatStrFormatter('%d'))
                     if i == 0:
-                        axs[row, i].right_ax.yaxis.set_major_formatter(FormatStrFormatter('%.1f'))
-
+                        axs[row, i].right_ax.yaxis.set_major_formatter(FormatStrFormatter('%d'))
+                        axs[row, i].right_ax.tick_params(axis='y', labelsize=12)
+                        
                 # Add fanchart to plot
                 try:
                     axs[row, 2].fill_between(df_fanchart.index, df_fanchart['p10'], df_fanchart['p90'], label='10th-90th pct', color=fanchart_palette[0], edgecolor='white')
@@ -153,18 +160,17 @@ def _create_annex_charts(annex_chart_dict, folder_name, save_svg=False, save_png
                     pass
 
                 axs[row, 2].plot(df_fanchart.index, df_fanchart['baseline'], color=tab10_palette[3], ls='dashed', lw=2.5, alpha=0.9, label='Deterministic')
-                axs[row, 2].legend(loc='best', fontsize=12)
+                axs[row, 2].legend(loc='best', fontsize=10)
 
             except Exception as e:
                 print(f'Error: {country}_{adjustment_period}: {e}')
 
         # Increase space between subplots and heading
-        fig.subplots_adjust(top=0.93)
+        fig.subplots_adjust(top=0.92)
 
         # Export charts
         if save_svg == True: plt.savefig(f'../output/{folder_name}/charts/{get_country_name(country)}.svg', format='svg', bbox_inches='tight')
         if save_png == True: plt.savefig(f'../output/{folder_name}/charts/{get_country_name(country)}.png', dpi=300, bbox_inches='tight')
-        plt.show()
 
 def plot_inv(country_codes, results_dict, folder_name, nrows=4, ncols=3, save_svg=False, save_png=True):
     """
@@ -219,6 +225,10 @@ def plot_inv(country_codes, results_dict, folder_name, nrows=4, ncols=3, save_sv
         axs[row,col].yaxis.set_major_formatter(FormatStrFormatter('%d'))
         axs2.yaxis.set_major_formatter(FormatStrFormatter('%d'))
 
+        # set label size to 12
+        axs[row,col].tick_params(axis='both', which='major', labelsize=14)
+        axs2.tick_params(axis='both', which='major', labelsize=14)
+
         # Extract legend handles and labels from subplots
         handles, labels = axs[0, 0].get_legend_handles_labels()
         handles2, labels2 = axs2.get_legend_handles_labels()
@@ -235,9 +245,9 @@ def plot_inv(country_codes, results_dict, folder_name, nrows=4, ncols=3, save_sv
     # Create a separate legend below the figure
     fig.legend(handles_unique, labels_unique, 
                loc='upper center', bbox_to_anchor=(0.5, 0), ncol=3, 
-               frameon=False, fontsize=16)
+               frameon=False, fontsize=14)
             
     plt.tight_layout(rect=[0, 0, 1, 0.96])
 
-    if save_svg == True: plt.savefig(f'../output/{folder_name}/charts/inv_all.jpeg', dpi=300, bbox_inches='tight')
-    if save_png == True: plt.savefig(f'../output/{folder_name}/charts/inv_all.svg', format='svg', bbox_inches='tight')
+    if save_png == True: plt.savefig(f'../output/{folder_name}/charts/inv_all.png', dpi=300, bbox_inches='tight')
+    if save_svg == True: plt.savefig(f'../output/{folder_name}/charts/inv_all.svg', format='svg', bbox_inches='tight')
