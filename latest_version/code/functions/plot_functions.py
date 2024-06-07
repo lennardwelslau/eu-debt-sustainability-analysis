@@ -148,6 +148,8 @@ def _create_annex_charts(annex_chart_dict, folder_name, save_svg=False, save_png
                     if i == 0:
                         axs[row, i].right_ax.yaxis.set_major_formatter(FormatStrFormatter('%d'))
                         axs[row, i].right_ax.tick_params(axis='y', labelsize=12)
+                    if i == 2:
+                        axs[row, i].yaxis.set_major_formatter(FormatStrFormatter('%d'))
                         
                 # Add fanchart to plot
                 try:
