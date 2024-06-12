@@ -29,6 +29,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+from scipy.optimize import curve_fit
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 sns.set_style('whitegrid')
@@ -49,12 +50,13 @@ class DsaModel:
             adjustment_period=4,  # number of years for linear spb_bca adjustment
             adjustment_start_year=2025,  # start year of linear spb_bca adjustment
             ageing_cost_period=10,  # number of years for ageing cost adjustment after adjustment period
-            fiscal_multiplier=0.75, 
-            growth_policy=False,
-            growth_policy_effect=0,
-            growth_policy_cost=0,
-            growth_policy_period=1,
-    ):
+            fiscal_multiplier=0.75, # fiscal multiplier for fiscal adjustment
+            growth_policy=False, # True if effet of growth enhancing policy is applied
+            growth_policy_effect=0, # effect of growth policy on GDP growth
+            growth_policy_cost=0, # cost of growth policy as share of GDP
+            growth_policy_period=1, # number of years during which growth policy is applied
+            bond_data=False, # Use bond level data for repayment profile
+        ):
 
         # Initialize model parameters
         self.country = country # country ISO code
@@ -62,15 +64,16 @@ class DsaModel:
         self.end_year = end_year # end year of projection (T+30)
         self.projection_period = self.end_year - start_year + 1 # number of years in projection
         self.adjustment_period = adjustment_period # adjustment period for structural primary balance, for COM 4 or 7 years
-        adjustment_start_year = adjustment_start_year # start year of adjustment period
-        self.adjustment_start = adjustment_start_year - start_year # start (T+x) of adjustment period
-        self.adjustment_end = adjustment_start_year + adjustment_period - start_year - 1  # end (T+x) of adjustment period
+        self.adjustment_start_year = adjustment_start_year # start year of adjustment period
+        self.adjustment_start = self.adjustment_start_year - start_year # start (T+x) of adjustment period
+        self.adjustment_end = self.adjustment_start_year + adjustment_period - start_year - 1  # end (T+x) of adjustment period
         self.ageing_cost_period = ageing_cost_period # number of years during which ageing costs have to be accounted for by spb adjustment
         self.fiscal_multiplier = fiscal_multiplier # fiscal multiplier for fiscal adjustment
         self.growth_policy = growth_policy # True if growth policy is applied
         self.growth_policy_effect = growth_policy_effect # effect of growth policy on GDP growth
         self.growth_policy_cost = growth_policy_cost # cost of growth policy as share of GDP
         self.growth_policy_period = growth_policy_period # number of years from adjustment start during which growth policy is applied
+        self.bond_data = bond_data # True if bond level data is used for repayment profile
 
         # Initialize model variables related to GDP, growth, inflation
         self.rg_bl = np.full(self.projection_period, np.nan, dtype=np.float64)  # baseline growth rate
@@ -122,6 +125,7 @@ class DsaModel:
         self.repayment_st = np.full(self.projection_period, np.nan, dtype=np.float64)  # repayment of short-term debt
         self.repayment_lt = np.full(self.projection_period, np.nan, dtype=np.float64)  # repayment of long-term debt
         self.repayment_lt_esm = np.full(self.projection_period, 0, dtype=np.float64)  # repayment of inst debt
+        self.repayment_lt_bond = np.full(self.projection_period, 0, dtype=np.float64)  # repayment of past bond issuance
         self.repayment = np.full(self.projection_period, np.nan, dtype=np.float64)  # repayment of total debt
         self.interest_st = np.full(self.projection_period, np.nan, dtype=np.float64)  # interest payment on short-term debt
         self.interest_lt = np.full(self.projection_period, np.nan, dtype=np.float64)  # interest payment on long-term debt
@@ -164,6 +168,7 @@ class DsaModel:
         self._clean_debt()
         self._clean_esm_repayment()
         self._clean_debt_redemption()
+        if self.bond_data: self._clean_bond_repayment()
         self._clean_pb()
         self._clean_implicit_interest_rate()
         self._clean_forward_rates()
@@ -300,7 +305,7 @@ class DsaModel:
         self.D_share_lt = 1 - self.D_share_st
         self.D_share_lt_maturing_T = self.df_deterministic_data.loc[0, 'DEBT_LT_MATURING_SHARE']
         self.D_share_lt_mat_avg = self.df_deterministic_data.loc[0, 'DEBT_LT_MATURING_AVG_SHARE']
-        self.avg_res_mat = min(round((1 / self.D_share_lt_mat_avg)), 30)
+        self.avg_res_mat = np.min([round((1 / self.D_share_lt_mat_avg)), 30])
 
         # Set share of domestic, euro and usd debt, ensure no double counting for non-euro countries
         self.D_share_domestic = np.round(self.df_deterministic_data.loc[0, 'DEBT_DOMESTIC_SHARE'], 4)
@@ -345,6 +350,43 @@ class DsaModel:
         mask = np.isnan(self.D_share_lt_maturing)
         self.D_share_lt_maturing[mask] = np.interp(x[mask], x[~mask], self.D_share_lt_maturing[~mask])
     
+    def _clean_bond_repayment(self):
+        """
+        Clean long-term bond repayment data.
+        """
+        # Import bond repayment data
+        for t, y in enumerate(range(self.start_year, self.end_year + 1)):
+            self.repayment_lt_bond[t] = self.df_deterministic_data.loc[y, 'BOND_REPAYMENT']
+        
+        # Approximate steady state original maturity structure
+        # self._approximate_original_maturity_structure()
+    
+    # def _approximate_original_maturity_structure(self):
+    #     """
+    #     Approximate non-linear original maturity structure of the debt stock.
+    #     """
+    #     # Create a DataFrame from the repayment array, restrict to max 30 year maturity
+    #     self.df_maturity_structure = pd.DataFrame(self.repayment_lt_bond, columns=['repayment']).fillna(0)
+    #     self.df_maturity_structure.iloc[30] += self.df_maturity_structure.iloc[31:].sum()
+    #     self.df_maturity_structure = self.df_maturity_structure.iloc[:31]
+        
+    #     # Normalize repayment to ensure it sums to 1
+    #     self.df_maturity_structure['repayment_share'] = self.df_maturity_structure['repayment'] / self.df_maturity_structure['repayment'].sum()
+        
+    #     # Fit a monotonous line that approximates residual maturity share
+    #     def func(x, a, b):
+    #         return 1 / (1 + a * x ) + b
+    #     mat = np.array(self.df_maturity_structure.index)
+    #     res_mat_share = np.array(self.df_maturity_structure['repayment_share'])
+    #     popt, pcov = curve_fit(func, mat, res_mat_share)
+    #     self.df_maturity_structure['residual_maturity_fit'] = func(mat, *popt) # Fit the curve
+    #     self.df_maturity_structure['residual_maturity_fit'].clip(lower=0, inplace=True) # Ensure no negative values
+        
+    #     # Calculate the approximate original as the normalized difference between consecutive residual maturity shares
+    #     # This ensures that issuance of new debt closely replicates the current residual maturity structure
+    #     self.df_maturity_structure['original_maturity_appr'] = self.df_maturity_structure['residual_maturity_fit'].diff()
+    #     self.df_maturity_structure['original_maturity_appr'] = self.df_maturity_structure['original_maturity_appr'] / self.df_maturity_structure['original_maturity_appr'].sum()
+    
     def _clean_pb(self):
         """
         Clean structural primary balance.
@@ -355,6 +397,7 @@ class DsaModel:
                 self.spb_bl[t] = self.df_deterministic_data.loc[y, 'STRUCTURAL_PRIMARY_BALANCE']
                 self.pb[t] = self.df_deterministic_data.loc[y, 'PRIMARY_BALANCE']
                 self.ob[t] = self.df_deterministic_data.loc[y, 'FISCAL_BALANCE']
+                self.sb[t] = self.spb_bl[t] + (self.ob[t] * self.ngdp_bl[t] - self.pb[t] * self.ngdp_bl[t]) / self.ngdp_bl[t]
             else:
                 self.spb_bl[t] = self.spb_bl[t - 1]
                 self.pb[t] = self.pb[t - 1]
@@ -425,7 +468,8 @@ class DsaModel:
         # Import ageing costs from Ageing Report data
         for t, y in enumerate(range(self.start_year, self.end_year + 1)):
             self.ageing_cost[t] = self.df_deterministic_data.loc[y, 'AGEING_COST']
-    
+
+
     # def _clean_property_income(self):
     #     """
     #     Clean property income data.
@@ -841,7 +885,7 @@ class DsaModel:
         self.alpha[t - 1] = self.D_st[t - 1] / self.D[t - 1]
         self.beta[t - 1] = self.D_new_lt[t - 1] / self.D_lt[t - 1]
 
-        # Use ameco implied interest until T+3 and back out iir_lt
+        # Use ameco implied interest until T+3 and derive iir_lt
         if t <= 2:
             self.iir_lt[t] = (self.iir[t] - self.alpha[t - 1] * self.i_st[t]) / (1 - self.alpha[t - 1])
             self.iir[t] = self.iir_bl[t]
@@ -851,7 +895,7 @@ class DsaModel:
             self.iir_lt[t] = self.beta[t - 1] * self.i_lt[t] + (1 - self.beta[t - 1]) * self.iir_lt[t - 1]
             self.iir[t] = self.alpha[t - 1] * self.i_st[t] + (1 - self.alpha[t - 1]) * self.iir_lt[t]
 
-        # Replace all 10 < iir < 0 with previous period value
+        # Replace all 10 < iir < 0 with previous period value to avoid implausible values
         for iir in [self.iir, self.iir_lt]:
             if iir[t] < 0 or iir[t] > 10 or np.isnan(iir[t]):
                 iir[t] = iir[t - 1]
@@ -870,8 +914,17 @@ class DsaModel:
         Calculate repayment of newly issued debt
         """
         self.repayment_st[t] = self.D_st[t - 1]  # repayment payments on short-term debt share in last years gross financing needs
-        self.repayment_lt[t] = self.D_share_lt_maturing[t] * self.D_lt[t - 1] + self.repayment_lt_esm[t]  # lt repayment based on maturing share and inst debt
-        self.repayment[t] = self.repayment_st[t] + self.repayment_lt[t]  # repayment of newly issued st, lt debt
+
+        # If bond data is True, add repayemnt of new issuance to legacy debt repayment_lt from _clean_bond_repayment method 
+        if self.bond_data:
+            self.repayment_lt[t] = np.sum(self.D_new_lt[np.max([0, t - 20]) : t] / 20) # Average maturity of new issuance is 10 years, spread evenly over 20 years
+
+        # If bond data is false, repayment share is simply a function of last periods debt stock
+        else:
+            self.repayment_lt[t] = self.D_share_lt_maturing[t] * self.D_lt[t - 1] + self.repayment_lt_esm[t] 
+
+        # Calculate total repayment
+        self.repayment[t] = self.repayment_st[t] + self.repayment_lt[t] + self.repayment_lt_bond[t] + self.repayment_lt_esm[t]
 
     def _calculate_gfn(self, t):
         """
@@ -894,7 +947,7 @@ class DsaModel:
         # Calculate short-term and long-term debt issuance
         self.D_st[t] = D_share_st_issuance * self.GFN[t]
         self.D_new_lt[t] = (1 - D_share_st_issuance) * self.GFN[t]
-        self.D_lt[t] = self.D_lt[t - 1] - self.repayment_lt[t] + self.D_new_lt[t]
+        self.D_lt[t] = np.max([self.D_lt[t - 1] + self.D_new_lt[t] - self.repayment_lt[t] - self.repayment_lt_bond[t], 0])
 
     def _calculate_balance(self, t):
         """
@@ -986,7 +1039,6 @@ class DsaModel:
         # Loop for SB balance part of EDP: min. 0.5 ob adjustment while deficit > 3 and before last period
         while (self.ob[self.adjustment_start + self.edp_sb_index] < self.edp_target[self.edp_sb_index]
                 and self.edp_sb_index + 1 < self.adjustment_period):
-            print(self.edp_sb_index, self.ob[self.adjustment_start + self.edp_sb_index])
             
             # If sb adjustment is less than 0.5, increase by 0.001
             while (self.sb[self.adjustment_start + self.edp_sb_index] 
@@ -1068,6 +1120,7 @@ class DsaModel:
 
         # If predefined adjustment steps are specified, project with them 
         if hasattr(self, 'predefined_adjustment_steps'):
+
             self.project(
                 edp_steps=self.edp_steps,
                 adjustment_steps=np.nan_to_num(self.predefined_adjustment_steps),
@@ -1212,10 +1265,10 @@ class DsaModel:
         self.deficit_resilience_target = np.full(self.adjustment_period, -1.5, dtype=float)
 
         # Define deficit resilience step size
-        if self.adjustment_period == 4:
+        if self.adjustment_period <= 4:
             self.deficit_resilience_step = 0.4
-        elif self.adjustment_period == 7:
-            self.deficit_resilience_step = 0.25
+        else:
+            self.deficit_resilience_step = 0.25     
 
         # Project baseline
         self.project(
@@ -1259,10 +1312,10 @@ class DsaModel:
             self.deficit_resilience_steps = np.full((self.adjustment_period,), np.nan, dtype=np.float64)
 
         # Define deficit resilience step size
-        if self.adjustment_period == 4:
+        if self.adjustment_period <= 4:
             self.deficit_resilience_step = 0.4
-        elif self.adjustment_period == 7:
-            self.deficit_resilience_step = 0.25
+        else:
+            self.deficit_resilience_step = 0.25    
 
         # Initialize post_adjustment_steps
         self.post_adjustment_steps = np.full((self.projection_period - self.adjustment_end - 1,), np.nan, dtype=np.float64)

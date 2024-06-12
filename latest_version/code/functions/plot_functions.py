@@ -9,7 +9,41 @@ sns.set_style('whitegrid')
 
 # Import DSA model class and stochastic subclass
 from classes import *
-from functions import *
+
+def get_country_name(iso):
+    """
+    Convert ISO country code to country name.
+    """
+    country_code_dict = {
+        'AUT': 'Austria',
+        'BEL': 'Belgium',
+        'BGR': 'Bulgaria',
+        'HRV': 'Croatia',
+        'CYP': 'Cyprus',
+        'CZE': 'Czechia',
+        'DNK': 'Denmark',
+        'EST': 'Estonia',
+        'FIN': 'Finland',
+        'FRA': 'France',
+        'DEU': 'Germany',
+        'GRC': 'Greece',
+        'HUN': 'Hungary',
+        'IRL': 'Ireland',
+        'ITA': 'Italy',
+        'LVA': 'Latvia',
+        'LTU': 'Lithuania',
+        'LUX': 'Luxembourg',
+        'MLT': 'Malta',
+        'NLD': 'Netherlands',
+        'POL': 'Poland',
+        'PRT': 'Portugal',
+        'ROU': 'Romania',
+        'SVK': 'Slovakia',
+        'SVN': 'Slovenia',
+        'ESP': 'Spain',
+        'SWE': 'Sweden',
+        }
+    return country_code_dict[iso]
 
 def plot_annex_charts(
         results_dict,

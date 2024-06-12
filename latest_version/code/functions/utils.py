@@ -9,41 +9,6 @@ import pickle
 # Import DSA model class and stochastic subclass
 from classes import *
 
-def get_country_name(iso):
-    """
-    Convert ISO country code to country name.
-    """
-    country_code_dict = {
-        'AUT': 'Austria',
-        'BEL': 'Belgium',
-        'BGR': 'Bulgaria',
-        'HRV': 'Croatia',
-        'CYP': 'Cyprus',
-        'CZE': 'Czechia',
-        'DNK': 'Denmark',
-        'EST': 'Estonia',
-        'FIN': 'Finland',
-        'FRA': 'France',
-        'DEU': 'Germany',
-        'GRC': 'Greece',
-        'HUN': 'Hungary',
-        'IRL': 'Ireland',
-        'ITA': 'Italy',
-        'LVA': 'Latvia',
-        'LTU': 'Lithuania',
-        'LUX': 'Luxembourg',
-        'MLT': 'Malta',
-        'NLD': 'Netherlands',
-        'POL': 'Poland',
-        'PRT': 'Portugal',
-        'ROU': 'Romania',
-        'SVK': 'Slovakia',
-        'SVN': 'Slovenia',
-        'ESP': 'Spain',
-        'SWE': 'Sweden',
-        }
-    return country_code_dict[iso]
-
 def create_results_dict(country_codes, adjustment_periods=[4, 7]):
     """
     Create results dictionary for analysis.
@@ -108,9 +73,38 @@ def _save_spbs(results_dict, folder_name):
     df_spb['binding_safeguard'] = df_spb[safeguard_col_list].max(axis=1)
     df_spb.rename(columns={'main_adjustment_deficit_reduction': 'deficit_reduction'}, inplace=True)
     
-    # replace country codes with country names
+    # add country names
     df_spb['iso'] = df_spb['country']
-    df_spb['country'] = df_spb['country'].apply(get_country_name)
+    country_code_dict = {
+        'AUT': 'Austria',
+        'BEL': 'Belgium',
+        'BGR': 'Bulgaria',
+        'HRV': 'Croatia',
+        'CYP': 'Cyprus',
+        'CZE': 'Czechia',
+        'DNK': 'Denmark',
+        'EST': 'Estonia',
+        'FIN': 'Finland',
+        'FRA': 'France',
+        'DEU': 'Germany',
+        'GRC': 'Greece',
+        'HUN': 'Hungary',
+        'IRL': 'Ireland',
+        'ITA': 'Italy',
+        'LVA': 'Latvia',
+        'LTU': 'Lithuania',
+        'LUX': 'Luxembourg',
+        'MLT': 'Malta',
+        'NLD': 'Netherlands',
+        'POL': 'Poland',
+        'PRT': 'Portugal',
+        'ROU': 'Romania',
+        'SVK': 'Slovakia',
+        'SVN': 'Slovenia',
+        'ESP': 'Spain',
+        'SWE': 'Sweden',
+        }
+    df_spb['country'] = df_spb['country'].map(country_code_dict)
 
     # Sort columns
     col_order = ['country',
