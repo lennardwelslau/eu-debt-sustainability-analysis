@@ -421,6 +421,9 @@ class StochasticDsaModel(DsaModel):
         sim_var = getattr(self, f'{var}_sim')
         bl_var = getattr(self, f'{var}')
 
+        # Check if first values of baseline and simulation are equal, if not, simulate
+        if not np.isclose(sim_var[0, 0], bl_var[self.stochastic_start-1]): self.simulate()
+
         # Calculate the percentiles
         self.pcts_dict = {}
         for pct in np.arange(10, 100, 10):
