@@ -601,6 +601,17 @@ class StochasticDsaModel(DsaModel):
             )
         return self.prob_above_60
     
+    def plot_target_func(self):
+        """
+        Plot the target function for the stochastic optimization.
+        """
+        results = {}
+        for x in np.linspace(self.spb_bounds[0], self.spb_bounds[1], 100):
+            y = self._target_spb_decline(spb_target=x)
+            results[x] = y
+        results = pd.Series(results)
+        results.plot()
+    
 # ========================================================================================= #
 #                               INTEGRATED OPTIMIZERS                                       #
 # ========================================================================================= #
