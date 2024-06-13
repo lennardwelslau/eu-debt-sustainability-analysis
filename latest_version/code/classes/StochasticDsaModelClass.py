@@ -580,7 +580,6 @@ class StochasticDsaModel(DsaModel):
         self.prob_explodes = prob_debt_explodes_jit(
             N=self.N, 
             d_sim=self.d_sim, 
-            stochastic_period=self.stochastic_period
             )
         return self.prob_explodes
     
@@ -592,7 +591,6 @@ class StochasticDsaModel(DsaModel):
         self.prob_above_60 = prob_debt_above_60_jit(
             N=self.N, 
             d_sim=self.d_sim, 
-            stochastic_period=self.stochastic_period
             )
         return self.prob_above_60
     
@@ -605,22 +603,24 @@ class StochasticDsaModel(DsaModel):
                          edp=True, 
                          debt_safeguard=True, 
                          deficit_resilience=True,
-                         deficit_resilience_post_adjustment=True):
+                         deficit_resilience_post_adjustment=False,
+                         print_results=True):
         """
         Find the structural primary balance that meets all criteria after deficit has been brought below 3% and debt safeguard is satisfied.
         """
-
+        print(f'Optimizing {self.country} ({self.adjustment_period}-year) ...\n')
+        # if print_results: self._print_table(f'Model params', 
+        #                  {'Country': self.country,
+        #                   'Adjustment period': self.adjustment_period,
+        #                   'Adjustment start': self.adjustment_start_year,
+        #                   'Shock frequency': self.shock_frequency,
+        #                   'Stochastic period': f"{self.stochastic_start_year}-{self.stochastic_start_year + self.stochastic_period}",
+        #                   'Estimation': f"{self.estimation} {'' if self.estimation == 'normal' else '('+self.var_method+')'}",
+        #                   'Bond level data': self.bond_data,
+        #                   'Safeguards': f"{'EDP,' if edp else ''} {'debt,' if debt_safeguard else ''} {'deficit_resilience' if deficit_resilience else ''} {'(incl. post-adjustment)' if deficit_resilience_post_adjustment else ''}"
+        #                 })
+        
         # Initiate spb_target and dataframe dictionary
-        print(
-            f'\n_____________ Optimizing {self.country} _____________\n' \
-            f'- Adjustment period: {self.adjustment_period}-year\n' \
-            f'- Adjustment start: {self.adjustment_start_year}\n' \
-            f'- Shock frequency: {self.shock_frequency}\n' \
-            f'- Stochastic period: {self.stochastic_start_year}-{self.stochastic_start_year+self.stochastic_period}\n' \
-            f'- Estimation: {self.estimation} ({"" if self.estimation == "normal" else self.var_method})\n' \
-            f'- Bond level data: {self.bond_data}\n' \
-            f'- Safeguards: {"EDP," if edp else""} {"debt," if debt_safeguard else ""} {"deficit_resilience" if deficit_resilience else ""} {"(incl. post-adjustment)" if deficit_resilience_post_adjustment else ""}\n'
-            )
         self.save_df = save_df
         self.spb_target_dict = {}
         self.pb_target_dict = {}
@@ -638,26 +638,36 @@ class StochasticDsaModel(DsaModel):
         if deficit_resilience: self._apply_deficit_resilience()
         if deficit_resilience_post_adjustment: self._apply_deficit_resilience_post_adjustment()
 
-        # Save binding SPB target
+        # Save binding SPB and PB target
         self.spb_target_dict['binding'] = self.spb_bca[self.adjustment_end]
         self.pb_target_dict['binding'] = self.pb[self.adjustment_end]
+
 
         # Save binding parameters to reproduce adjustment path
         self.binding_parameter_dict['adjustment_steps'] = self.adjustment_steps
         self.binding_parameter_dict['spb_target'] = self.binding_spb_target
         self.binding_parameter_dict['criterion'] = self.binding_criterion
-        if edp: self.binding_parameter_dict['edp_binding'] = self.edp_binding
-        if edp: self.binding_parameter_dict['edp_steps'] = self.edp_steps
-        if deficit_resilience: self.binding_parameter_dict['deficit_resilience_steps'] = self.deficit_resilience_steps
-        if deficit_resilience_post_adjustment: self.binding_parameter_dict['post_adjustment_steps'] = self.post_adjustment_steps
+
+        # Save EDP and safeguards parameters
+        if edp: 
+            self.binding_parameter_dict['edp_binding'] = self.edp_binding
+            self.binding_parameter_dict['edp_steps'] = self.edp_steps
+        if debt_safeguard: 
+            self.binding_parameter_dict['debt_safeguard_binding'] = self.debt_safeguard_binding
+        if deficit_resilience: 
+            self.binding_parameter_dict['deficit_resilience_binding'] = self.deficit_resilience_binding
+            self.binding_parameter_dict['deficit_resilience_steps'] = self.deficit_resilience_steps
+        if deficit_resilience_post_adjustment: 
+            self.binding_parameter_dict['deficit_resilience_post_adjustment_binding'] = self.deficit_resilience_post_adjustment_binding
+            self.binding_parameter_dict['post_adjustment_steps'] = self.post_adjustment_steps
         
+        # Print results
+        # if print_results: self._print_table('SPB Targets', {key: f"{value:.3f}" for key, value in self.spb_target_dict.items()})
+        # if print_results: self._print_table('Binding params', {key: value for key, value in self.binding_parameter_dict.items()})
+        # print(f'______________________________________________________________')
+        if print_results: self._print_results_tables(edp, debt_safeguard, deficit_resilience, deficit_resilience_post_adjustment)
         # Save dataframe
         if self.save_df: self.df_dict['binding'] = self.df(all=True)
-        print(
-            f'Binding SPB target: {self.spb_bca[self.adjustment_end]:.3f} ({self.binding_criterion})' \
-            f'\n_______________________________________________\n'
-        )
-
 
     def _run_dsa(self, criterion='all'):
         """
@@ -672,8 +682,8 @@ class StochasticDsaModel(DsaModel):
             # Run all deterministic scenarios, skip if criterion not applicable
             for deterministic_criterion in deterministic_criteria_list:
                 try:
-                    spb_target = self.find_spb_deterministic(criterion=deterministic_criterion)
-                    self.spb_target_dict[deterministic_criterion] = spb_target
+                    self.find_spb_deterministic(criterion=deterministic_criterion)
+                    self.spb_target_dict[deterministic_criterion] = self.spb_bca[self.adjustment_end]
                     self.pb_target_dict[deterministic_criterion] = self.pb[self.adjustment_end]
                     if self.save_df:
                         self.df_dict[deterministic_criterion] = self.df(all=True)
@@ -682,26 +692,25 @@ class StochasticDsaModel(DsaModel):
 
             # Run stochastic scenario, skip if not possible due to lack of data
             try: 
-                spb_target = self.find_spb_stochastic()
-                self.spb_target_dict['stochastic'] = spb_target
+                self.find_spb_stochastic()
+                self.spb_target_dict['stochastic'] = self.spb_bca[self.adjustment_end]
                 self.pb_target_dict['stochastic'] = self.pb[self.adjustment_end]
                 if self.save_df: self.df_dict['stochastic'] = self.df(all=True)
             except:
                 pass
 
-        # If specific criterion given, run only one optimization
+        # If specific criterion given for EDP optimization, run only one optimization
         else:
             if criterion in deterministic_criteria_list:
-                self.binding_spb_target = self.find_spb_deterministic(criterion=criterion)
+                self.find_spb_deterministic(criterion=criterion)
 
             elif criterion == 'stochastic':
-                self.binding_spb_target = self.find_spb_stochastic()
+                self.find_spb_stochastic()
 
             # Replace binding scenario
             self.binding_spb_target = self.spb_bca[self.adjustment_end]
-            print(f'SPB* after EDP for {criterion}: {self.binding_spb_target:.3f}')
-            self.spb_target_dict[criterion] = self.binding_spb_target
-            self.pb_target_dict[criterion] = self.pb[self.adjustment_end]
+            self.spb_target_dict['binding_dsa_edp'] = self.spb_bca[self.adjustment_end]
+            self.pb_target_dict['binding_dsa_edp'] = self.pb[self.adjustment_end]
 
             
     def _get_binding(self):
@@ -711,14 +720,11 @@ class StochasticDsaModel(DsaModel):
         # Get binding SPB target and scenario from dictionary with SPB targets
         self.binding_spb_target = np.max(list(self.spb_target_dict.values()))
         self.binding_criterion = list(self.spb_target_dict.keys())[np.argmax(list(self.spb_target_dict.values()))]
-        
+        self.spb_target_dict['binding_dsa'] = np.max(list(self.spb_target_dict.values()))
+        self.pb_target_dict['binding_dsa'] = np.max(list(self.pb_target_dict.values()))
+
         # Project under baseline assumptions
         self.project(spb_target=self.binding_spb_target, scenario=None)
-        
-        # Print results
-        for key, value in self.spb_target_dict.items():
-            print(f'SPB ({key}): {value:.3f}')
-        print(f'SPB*: {self.spb_bca[self.adjustment_end]:.3f} ({self.binding_criterion})')
 
     def _apply_edp(self):
         """ 
@@ -726,22 +732,17 @@ class StochasticDsaModel(DsaModel):
         """
         # Check if EDP binding, run DSA for periods after EDP and project new path under baseline assumptions
         self.find_edp(spb_target=self.binding_spb_target)
-        if (not np.isnan(self.edp_steps[0]) 
-            and self.edp_steps[0] > self.adjustment_steps[0]): 
+        if (not np.isnan(self.edp_steps[0]) and self.edp_steps[0] > self.adjustment_steps[0]):
             self.edp_binding = True 
-        else: 
-            self.edp_binding = False
-        if self.edp_binding: 
             self._run_dsa(criterion=self.binding_criterion)
             self.project(
                 spb_target=self.binding_spb_target, 
                 edp_steps=self.edp_steps,
                 scenario=None
                 )
-            print(f'SPB* after applying EDP: {self.spb_bca[self.adjustment_end]:.3f}, EDP steps: {np.array2string(self.edp_steps, precision=3, separator=", ")}')
-        else: 
-            print(f'EDP not binding, EDP steps: {np.array2string(self.edp_steps, precision=3, separator=", ")}')
-        if self.save_df: self.df_dict['edp'] = self.df(all=True)
+            if self.save_df: self.df_dict['binding_dsa_edp'] = self.df(all=True)
+        else:
+            self.edp_binding = False
 
     def _apply_debt_safeguard(self): 
         """ 
@@ -763,15 +764,15 @@ class StochasticDsaModel(DsaModel):
             
             # If debt safeguard SPB target is higher than DSA target, save debt safeguard target
             if self.spb_debt_safeguard_target > self.binding_spb_target + 1e-8: # 1e-8 tolerance for floating point errors
+                self.debt_safeguard_binding = True
                 self.binding_spb_target = self.spb_debt_safeguard_target
                 self.spb_target = self.binding_spb_target
                 self.binding_criterion = 'debt_safeguard'
                 self.spb_target_dict['debt_safeguard'] = self.binding_spb_target
                 self.pb_target_dict['debt_safeguard'] = self.pb[self.adjustment_end]
                 if self.save_df: self.df_dict['debt_safeguard'] = self.df(all=True)
-                print(f'SPB* after binding debt safeguard: {self.binding_spb_target:.3f}')
         else:
-            print(f'Debt safeguard not binding')
+            self.debt_safeguard_binding = False
 
     def _apply_deficit_resilience(self):
         """ 
@@ -784,35 +785,129 @@ class StochasticDsaModel(DsaModel):
                 
         # Save results and print update
         if np.any([~np.isnan(self.deficit_resilience_steps)]):
-            print(f'SPB* after deficit resilience: {self.spb_bca[self.adjustment_end]:.3f}, DRS steps: {np.array2string(self.deficit_resilience_steps, precision=3, separator=", ")}')
+            self.deficit_resilience_binding = True
             self.spb_target_dict['deficit_resilience'] = self.spb_bca[self.adjustment_end]
             self.pb_target_dict['deficit_resilience'] = self.pb[self.adjustment_end]
+            self.binding_spb_target = self.spb_bca[self.adjustment_end]
+            if self.save_df: self.df_dict['deficit_resilience'] = self.df(all=True)
         else:
-            print(f'Deficit resilience safeguard not binding, DRS steps: {np.array2string(self.deficit_resilience_steps, precision=3, separator=", ")}')
+            self.deficit_resilience_binding = False
                 
-        self.binding_spb_target = self.spb_bca[self.adjustment_end]
-
-        if self.save_df: self.df_dict['deficit_resilience'] = self.df(all=True)
-
     def _apply_deficit_resilience_post_adjustment(self):
         """
         Apply deficit resilience safeguard for post adjustment period.
         """
-        # For countries with high deficit, find long term SPB target that brings and keeps deficit below 1.5%
+        # For countries with high deficit or debt, find long term SPB target that brings and keeps deficit below 1.5%
         if (np.any(self.d[self.adjustment_end+1:] > 60)
             or np.any(self.ob[self.adjustment_end+1:] < -3)):
             self.find_spb_deficit_resilience_post_adjustment()
         
         # Save results and print update
         if np.any([~np.isnan(self.post_adjustment_steps)]):
-            print(f'(age-adj. SPB(t+{self.adjustment_end+10}): {self.spb_bca[self.adjustment_end+10]:.3f}, add. adj.: {(self.spb_bca[self.adjustment_end+10] - self.spb_bca[self.adjustment_end]):.3f})')
+            self.deficit_resilience_post_adjustment_binding = True
             self.spb_target_dict['deficit_resilience_post_adjustment'] = self.spb[self.adjustment_end+10]
-            self.spb_target_dict['deficit_resilience_post_adjustment_bca'] = self.spb_bca[self.adjustment_end+10]
             self.pb_target_dict['deficit_resilience_post_adjustment'] = self.pb[self.adjustment_end+10]
+            if self.save_df: self.df_dict['deficit_resilience_post_adjustment'] = self.df(all=True)
         else:
-            print('Deficit resilience safeguard not binding after adjustment period')
+            self.deficit_resilience_post_adjustment_binding = False
+
+    def _print_results_tables(self, edp=True, debt_safeguard=True, deficit_resilience=True, deficit_resilience_post_adjustment=False):
+        """
+        Print three ascii tables side by side.
+        """
+        # Prepare data for the tables
+        model_params = {
+            'Country': self.country,
+            'Adjustment period': self.adjustment_period,
+            'Adjustment start': self.adjustment_start_year,
+            'Shock frequency': self.shock_frequency,
+            'Stochastic period': f"{self.stochastic_start_year}-{self.stochastic_start_year + self.stochastic_period}",
+            'Estimation': f"{self.estimation} {'' if self.estimation == 'normal' else '(' + self.var_method + ')'}",
+            'Bond level data': self.bond_data,
+            'Safeguards': f"{'EDP,' if edp else ''} {'debt,' if debt_safeguard else ''} {'deficit_resilience' if deficit_resilience else ''} {'(incl. post-adjustment)' if deficit_resilience_post_adjustment else ''}"
+        }
+        spb_targets = {key: f"{value:.3f}" for key, value in self.spb_target_dict.items()}
+        binding_params = {
+            key: (
+                np.array2string(value, precision=3, separator=', ') if isinstance(value, np.ndarray)
+                else f'{value:.3f}' if isinstance(value, float)
+                else str(value)
+            ) for key, value in self.binding_parameter_dict.items()
+        }
+
+        # Convert all values to string with proper formatting
+        formatted_model_params = {key: str(value) for key, value in model_params.items()}
+        formatted_spb_targets = {key: str(value) for key, value in spb_targets.items()}
+        formatted_binding_params = {key: str(value) for key, value in binding_params.items()}
+
+        # Find the maximum length of key and value for all tables
+        max_key_len1 = max(len(key) for key in formatted_model_params.keys())
+        max_val_len1 = max(len(value) for value in formatted_model_params.values())
+        max_key_len2 = max(len(key) for key in formatted_spb_targets.keys())
+        max_val_len2 = max(len(value) for value in formatted_spb_targets.values())
+        max_key_len3 = max(len(key) for key in formatted_binding_params.keys())
+        max_val_len3 = max(len(value) for value in formatted_binding_params.values())
+
+        table1_width = max_key_len1 + max_val_len1 + 7
+        table2_width = max_key_len2 + max_val_len2 + 7
+        table3_width = max_key_len3 + max_val_len3 + 7
+        total_width = table1_width + table2_width + table3_width + 10  # 10 spaces between tables
+
+        # Print title and separator for combined tables
+        print(f"{'Model Params'.center(table1_width - 2)}{' ' * 5}{'SPB Targets'.center(table2_width - 2)}{' ' * 5}{'Binding Params'.center(table3_width - 2)}")
+        print('-' * table1_width + ' ' * 5 + '-' * table2_width + ' ' * 5 + '-' * table3_width)
+
+        # Print the combined tables
+        keys1 = list(formatted_model_params.keys())
+        keys2 = list(formatted_spb_targets.keys())
+        keys3 = list(formatted_binding_params.keys())
+        max_rows = max(len(keys1), len(keys2), len(keys3))
+        for i in range(max_rows):
+            if i < len(keys1):
+                key1 = keys1[i]
+                value1 = formatted_model_params[key1]
+                line1 = f"| {key1.ljust(max_key_len1)} | {value1.ljust(max_val_len1)} |"
+            else:
+                line1 = " " * table1_width
+            if i < len(keys2):
+                key2 = keys2[i]
+                value2 = formatted_spb_targets[key2]
+                line2 = f"| {key2.ljust(max_key_len2)} | {value2.ljust(max_val_len2)} |"
+            else:
+                line2 = " " * table2_width
+            if i < len(keys3):
+                key3 = keys3[i]
+                value3 = formatted_binding_params[key3]
+                line3 = f"| {key3.ljust(max_key_len3)} | {value3.ljust(max_val_len3)} |"
+            else:
+                line3 = " " * table3_width
+            print(line1 + ' ' * 5 + line2 + ' ' * 5 + line3)
+
+        print('-' * table1_width + ' ' * 5 + '-' * table2_width + ' ' * 5 + '-' * table3_width)
+
+    # def _print_table(self, title, data):
+    #     """
+    #     Print a simple ascii table for results.
+    #     """
+    #     # Convert all values to string with proper formatting
+    #     formatted_data = {
+    #         key: (
+    #             np.array2string(value, precision=2, separator=', ') if isinstance(value, np.ndarray) 
+    #             else f'{value:.2f}' if isinstance(value, float) 
+    #             else str(value)
+    #         ) for key, value in data.items()}
+
+    #     # Find the maximum length of key and value
+    #     max_key_len = max(len(key) for key in formatted_data.keys())
+    #     max_val_len = max(len(value) for value in formatted_data.values())
+    #     table_width = max_key_len + max_val_len + 7
         
-        if self.save_df: self.df_dict['deficit_resilience_post_adjustment'] = self.df(all=True)
+    #     # Print the table
+    #     print(f"{title.center(table_width)}")
+    #     print('-' * table_width)
+    #     for key, value in formatted_data.items():
+    #         print(f"| {key.ljust(max_key_len)} | {str(value).ljust(max_val_len)} |")
+    #     print(f"{'-' * table_width}")
 
     def find_deficit_prob(self):
         """
@@ -954,24 +1049,24 @@ def simulate_debt_jit(N, stochastic_period, D_share_domestic, D_share_eur, D_sha
                         - pb_sim[n, t] + sf_sim[n, t]
             
 @jit(nopython=True)
-def prob_debt_explodes_jit(N, d_sim, stochastic_period):
+def prob_debt_explodes_jit(N, d_sim):
     """
     Calculate the probability of the debt-to-GDP ratio exploding.
     """
     prob_explodes = 0
     for n in range(N):
-        if d_sim[n, 0] < d_sim[n, stochastic_period]:
+        if d_sim[n, 0] < d_sim[n, -1]:
             prob_explodes += 1
     return prob_explodes / N
 
 @jit(nopython=True)
-def prob_debt_above_60_jit(N, d_sim, stochastic_period):
+def prob_debt_above_60_jit(N, d_sim):
     """
     Calculate the probability of the debt-to-GDP ratio exceeding 60
     """
     prob_debt_above_60 = 0
     for n in range(N):
-        if 60 < d_sim[n, stochastic_period+1]:
+        if 60 < d_sim[n, -1]:
             prob_debt_above_60 += 1
     return prob_debt_above_60 / N
 
