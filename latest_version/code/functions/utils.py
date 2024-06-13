@@ -63,10 +63,6 @@ def _save_spbs(results_dict, folder_name):
                 df_spb = pd.concat([df_spb, df])
     df_spb = df_spb.pivot(index=['country', 'adjustment_period'], columns='scenario', values='spbstar').reset_index()
     
-    # Get binding DSA scenario
-    col_list = ['main_adjustment', 'adverse_r_g', 'lower_spb', 'financial_stress', 'stochastic']
-    df_spb['binding_dsa'] = df_spb[col_list].max(axis=1)
-    
     # Get binding safeguard scenario
     safeguard_col_list = ['deficit_reduction', 'debt_safeguard', 'deficit_resilience']
     safeguard_col_list = [col for col in safeguard_col_list if col in df_spb.columns]
@@ -120,8 +116,7 @@ def _save_spbs(results_dict, folder_name):
                 'debt_safeguard',
                 'deficit_resilience',
                 'binding_safeguard',
-                'binding',
-                'deficit_resilience_post_adjustment'
+                'binding'
                 ]
     for col in col_order:
         if col not in df_spb.columns: df_spb[col] = np.nan

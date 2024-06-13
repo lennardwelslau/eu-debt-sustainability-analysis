@@ -18,8 +18,7 @@ def run_dsa(
         folder_name, 
         edp=True, 
         debt_safeguard=True, 
-        deficit_resilience=True,
-        deficit_resilience_post_adjustment=False
+        deficit_resilience=True
         ):
     """
     Runs DSA for all EU countries and saves results individually.
@@ -42,7 +41,7 @@ def run_dsa(
                 edp=edp, 
                 debt_safeguard=debt_safeguard, 
                 deficit_resilience=deficit_resilience,
-                deficit_resilience_post_adjustment=deficit_resilience_post_adjustment
+                deficit_resilience_post_adjustment=False
                 )
             results_dict[country][adjustment_period]['spb_target_dict'] = dsa.spb_target_dict
             results_dict[country][adjustment_period]['df_dict'] = dsa.df_dict
@@ -91,7 +90,7 @@ def run_inv_scenario(
             dsa.find_spb_binding(edp=False, 
                                  debt_safeguard=False, 
                                  deficit_resilience=False,
-                                 deficit_resilience_post_adjustment=True)
+                                 deficit_resilience_post_adjustment=False)
 
             # if dsa.spb_binding < spb_binding baseline, increase by 0.5 
             if dsa.spb_target < results_dict[country][adjustment_period]['binding_parameter_dict']['spb_target']:
@@ -130,7 +129,7 @@ def run_consecutive_dsa(
             adjustment_steps = dsa.adjustment_steps
         else:
             dsa.predefined_adjustment_steps = np.concatenate([adjustment_steps, np.nan * np.ones(consecutive_adjustment_period)])
-            dsa.find_spb_binding()
+            dsa.find_spb_binding(deficit_resilience=False, deficit_resilience_post_adjustment=False)
             adjustment_steps = np.concatenate([adjustment_steps, dsa.adjustment_steps[len(adjustment_steps):]])
         results[f'adjustment_period_{i+1}'] = dsa.spb_target_dict
 
@@ -143,7 +142,7 @@ def run_consecutive_dsa(
 
         # Adding vertical spans
         colors = sns.color_palette('tab10')
-        for i in range(5):
+        for i in range(number_of_adjustment_periods):
             start = start_year + initial_adjustment_period + consecutive_adjustment_period * i
             end = start_year + initial_adjustment_period + consecutive_adjustment_period * (i + 1)
             plt.axvspan(start - consecutive_adjustment_period, end, color=colors[i], alpha=0.1, label=f'adj. period {i+1}')

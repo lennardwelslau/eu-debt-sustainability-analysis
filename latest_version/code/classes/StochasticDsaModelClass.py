@@ -815,11 +815,31 @@ class StochasticDsaModel(DsaModel):
         spb_targets = {key: f"{value:.3f}" for key, value in self.spb_target_dict.items()}
         binding_params = {
             key: (
-                np.array2string(value, precision=3, separator=', ') if isinstance(value, np.ndarray)
+                np.array2string(value, precision=3, separator=', ').replace('[', '').replace(']', '') if isinstance(value, np.ndarray)
                 else f'{value:.3f}' if isinstance(value, float)
                 else str(value)
-            ) for key, value in self.binding_parameter_dict.items()
+            ) for key, value in self.binding_parameter_dict.items() if key != 'post_adjustment_steps'
         }
+
+        # Check for adjustment period > 7 and add new keys if necessary
+        if self.adjustment_period > 7 and self.adjustment_period <= 14:
+            del binding_params['adjustment_steps']
+            binding_params['adjustment_steps'] = np.array2string(self.adjustment_steps[:7], precision=3, separator=', ').replace('[', '').replace(']', '')
+            binding_params['adjustment_steps_continued'] = np.array2string(self.adjustment_steps[7:], precision=3, separator=', ').replace('[', '').replace(']', '')
+            if 'edp_steps' in self.binding_parameter_dict:
+                del binding_params['edp_steps']
+                binding_params['edp_steps'] = np.array2string(self.edp_steps[:7], precision=3, separator=', ').replace('[', '').replace(']', '')
+                binding_params['edp_steps_continued'] = np.array2string(self.edp_steps[7:], precision=3, separator=', ').replace('[', '').replace(']', '')
+        elif self.adjustment_period > 14:
+            del binding_params['adjustment_steps']
+            binding_params['adjustment_steps'] = np.array2string(self.adjustment_steps[:7], precision=3, separator=', ').replace('[', '').replace(']', '')
+            binding_params['adjustment_steps_continued'] = np.array2string(self.adjustment_steps[7:14], precision=3, separator=', ').replace('[', '').replace(']', '')
+            binding_params['adjustment_steps_continued2'] = np.array2string(self.adjustment_steps[14:], precision=3, separator=', ').replace('[', '').replace(']', '')
+            if 'edp_steps' in self.binding_parameter_dict:
+                del binding_params['edp_steps']
+                binding_params['edp_steps'] = np.array2string(self.edp_steps[:7], precision=3, separator=', ').replace('[', '').replace(']', '')
+                binding_params['edp_steps_continued'] = np.array2string(self.edp_steps[7:14], precision=3, separator=', ').replace('[', '').replace(']', '')
+                binding_params['edp_steps_continued2'] = np.array2string(self.edp_steps[14:], precision=3, separator=', ').replace('[', '').replace(']', '')
 
         # Convert all values to string with proper formatting
         formatted_model_params = {key: str(value) for key, value in model_params.items()}
@@ -840,7 +860,7 @@ class StochasticDsaModel(DsaModel):
         total_width = table1_width + table2_width + table3_width + 10  # 10 spaces between tables
 
         # Print title and separator for combined tables
-        print(f"{'Model Params'.center(table1_width - 2)}{' ' * 5}{'SPB Targets'.center(table2_width - 2)}{' ' * 5}{'Binding Params'.center(table3_width - 2)}")
+        print(f"{'Model Params'.center(table1_width)}{' ' * 5}{'SPB Targets'.center(table2_width)}{' ' * 5}{'Binding Params'.center(table3_width)}")
         print('-' * table1_width + ' ' * 5 + '-' * table2_width + ' ' * 5 + '-' * table3_width)
 
         # Print the combined tables
@@ -849,6 +869,7 @@ class StochasticDsaModel(DsaModel):
         keys3 = list(formatted_binding_params.keys())
         max_rows = max(len(keys1), len(keys2), len(keys3))
         for i in range(max_rows):
+            line1 = line2 = line3 = ""
             if i < len(keys1):
                 key1 = keys1[i]
                 value1 = formatted_model_params[key1]
