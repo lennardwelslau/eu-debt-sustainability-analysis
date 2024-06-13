@@ -90,7 +90,8 @@ def run_inv_scenario(
             dsa.find_spb_binding(edp=False, 
                                  debt_safeguard=False, 
                                  deficit_resilience=False,
-                                 deficit_resilience_post_adjustment=False)
+                                 deficit_resilience_post_adjustment=False,
+                                 print_results=False)
 
             # if dsa.spb_binding < spb_binding baseline, increase by 0.5 
             if dsa.spb_target < results_dict[country][adjustment_period]['binding_parameter_dict']['spb_target']:
