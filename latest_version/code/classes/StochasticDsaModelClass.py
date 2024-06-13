@@ -409,6 +409,9 @@ class StochasticDsaModel(DsaModel):
             pb_sim=self.pb_sim, 
             sf_sim=self.sf_sim)
 
+        # Set negative debt-to-GDP ratios to zero
+        self.d_sim = np.where(self.d_sim < 0, 0, self.d_sim)
+
 # ========================================================================================= #
 #                                AUXILIARY METHODS                                          #
 # ========================================================================================= #
@@ -468,7 +471,7 @@ class StochasticDsaModel(DsaModel):
 #                              STOCHASTIC OPTIMIZATION METHODS                              # 
 # ========================================================================================= #
 
-    def find_spb_stochastic(self, prob_target=0.3, bounds=(-10, 10), print_update=False):
+    def find_spb_stochastic(self, prob_target=0.3, bounds=(-6, 6), print_update=False):
         """
         Find the structural primary balance that ensures the probability of the debt-to-GDP ratio exploding is equal to prob_target.
         """
@@ -483,6 +486,8 @@ class StochasticDsaModel(DsaModel):
 
         if not hasattr(self, 'post_adjustment_steps'):
             self.post_adjustment_steps = None
+
+        #if self.country in ['DNK']: bounds = (-6,0) # Denmark's target function has large local minima for high values
         
         self.stochastic_optimization_dict = {}
 
@@ -527,7 +532,7 @@ class StochasticDsaModel(DsaModel):
         self.spb_bounds = bounds
         self.stochastic_optimization_dict = {}
 
-        # Optimize _target_pb to find b_target that ensures prob_debt_above_60 == prob_target
+        # Optimize _target_pb to find b_target that ensures prob_debt_above_60 or prob_debt_explodes == prob_target
         self.spb_target = minimize_scalar(self._target_spb_decline, method='bounded', bounds=self.spb_bounds).x
         
         # Store results in a dataframe
@@ -569,11 +574,10 @@ class StochasticDsaModel(DsaModel):
         # Optimize for more probable target    
         min_prob = np.min([self.prob_explodes, self.prob_above_60])
         
-        # Penalty to avoid local minima 
-        if min_prob <= 0 + 1e-8:
-            return 1
-
-        return np.abs(min_prob - self.prob_target)
+        # Penalty term to avoid local minima at upper bound
+        penalty = np.max([0,spb_target/10]) if np.isclose(min_prob, 0) else 0
+        
+        return np.abs(min_prob - self.prob_target) + penalty
 
     def prob_debt_explodes(self):
         """
@@ -632,7 +636,6 @@ class StochasticDsaModel(DsaModel):
         # Save binding SPB and PB target
         self.spb_target_dict['binding'] = self.spb_bca[self.adjustment_end]
         self.pb_target_dict['binding'] = self.pb[self.adjustment_end]
-
 
         # Save binding parameters to reproduce adjustment path
         self.binding_parameter_dict['adjustment_steps'] = self.adjustment_steps
