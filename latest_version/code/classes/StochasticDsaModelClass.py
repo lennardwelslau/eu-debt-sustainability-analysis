@@ -803,14 +803,14 @@ class StochasticDsaModel(DsaModel):
         """
         # Prepare data for the tables
         model_params = {
-            'Country': self.country,
-            'Adjustment period': self.adjustment_period,
-            'Adjustment start': self.adjustment_start_year,
-            'Shock frequency': self.shock_frequency,
-            'Stochastic period': f"{self.stochastic_start_year}-{self.stochastic_start_year + self.stochastic_period}",
-            'Estimation': f"{self.estimation} {'' if self.estimation == 'normal' else '(' + self.var_method + ')'}",
-            'Bond level data': self.bond_data,
-            'Safeguards': f"{'EDP,' if edp else ''} {'debt,' if debt_safeguard else ''} {'deficit_resilience' if deficit_resilience else ''} {'(incl. post-adjustment)' if deficit_resilience_post_adjustment else ''}"
+            'country': self.country,
+            'adjustment period': self.adjustment_period,
+            'adjustment start': self.adjustment_start_year,
+            'shock frequency': self.shock_frequency,
+            'stochastic period': f"{self.stochastic_start_year}-{self.stochastic_start_year + self.stochastic_period}",
+            'estimation': f"{self.estimation} {'' if self.estimation == 'normal' else '(' + self.var_method + ')'}",
+            'bond level data': self.bond_data,
+            'safeguards': f"{'EDP,' if edp else ''} {'debt,' if debt_safeguard else ''} {'deficit_resilience' if deficit_resilience else ''} {'(incl. post-adjustment)' if deficit_resilience_post_adjustment else ''}"
         }
         spb_targets = {key: f"{value:.3f}" for key, value in self.spb_target_dict.items()}
         binding_params = {

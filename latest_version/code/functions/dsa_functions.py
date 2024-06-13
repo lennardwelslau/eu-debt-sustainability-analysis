@@ -30,7 +30,7 @@ def run_dsa(
         counter += 1
         elapsed_time = time.time() - start_time
         estimated_remaining_time = round((elapsed_time / counter) * (total_countries - counter) / 60, 1)
-        print(f'\n... optimising {counter} of {total_countries}, {country}, estimated remaining time: {estimated_remaining_time} minutes')
+        print(f'\n... optimising {country}, {counter} of {total_countries}, estimated remaining time: {estimated_remaining_time} minutes\n')
         
         for adjustment_period in adjustment_periods:
             dsa = StochasticDsaModel(
