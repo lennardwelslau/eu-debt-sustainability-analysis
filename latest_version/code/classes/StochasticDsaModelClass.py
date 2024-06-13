@@ -599,12 +599,12 @@ class StochasticDsaModel(DsaModel):
 # ========================================================================================= #
 
     def find_spb_binding(self, 
-                         save_df=False, 
                          edp=True, 
                          debt_safeguard=True, 
                          deficit_resilience=True,
                          deficit_resilience_post_adjustment=False,
-                         print_results=True):
+                         print_results=True,
+                         save_df=False):
         """
         Find the structural primary balance that meets all criteria after deficit has been brought below 3% and debt safeguard is satisfied.
         """       
@@ -695,9 +695,8 @@ class StochasticDsaModel(DsaModel):
 
             # Replace binding scenario
             self.binding_spb_target = self.spb_bca[self.adjustment_end]
-            self.spb_target_dict['binding_dsa_edp'] = self.spb_bca[self.adjustment_end]
-            self.pb_target_dict['binding_dsa_edp'] = self.pb[self.adjustment_end]
-
+            self.spb_target_dict['edp'] = self.spb_bca[self.adjustment_end]
+            self.pb_target_dict['edp'] = self.pb[self.adjustment_end]
             
     def _get_binding(self):
         """
@@ -706,8 +705,6 @@ class StochasticDsaModel(DsaModel):
         # Get binding SPB target and scenario from dictionary with SPB targets
         self.binding_spb_target = np.max(list(self.spb_target_dict.values()))
         self.binding_criterion = list(self.spb_target_dict.keys())[np.argmax(list(self.spb_target_dict.values()))]
-        self.spb_target_dict['binding_dsa'] = np.max(list(self.spb_target_dict.values()))
-        self.pb_target_dict['binding_dsa'] = np.max(list(self.pb_target_dict.values()))
 
         # Project under baseline assumptions
         self.project(spb_target=self.binding_spb_target, scenario=None)
@@ -718,7 +715,7 @@ class StochasticDsaModel(DsaModel):
         """
         # Check if EDP binding, run DSA for periods after EDP and project new path under baseline assumptions
         self.find_edp(spb_target=self.binding_spb_target)
-        if (not np.isnan(self.edp_steps[0]) and self.edp_steps[0] > self.adjustment_steps[0]):
+        if not np.all([np.isnan(self.edp_steps)]) and np.any([self.edp_steps >= self.adjustment_steps - 1e-8]):
             self.edp_binding = True 
             self._run_dsa(criterion=self.binding_criterion)
             self.project(
@@ -726,7 +723,7 @@ class StochasticDsaModel(DsaModel):
                 edp_steps=self.edp_steps,
                 scenario=None
                 )
-            if self.save_df: self.df_dict['binding_dsa_edp'] = self.df(all=True)
+            if self.save_df: self.df_dict['edp'] = self.df(all=True)
         else:
             self.edp_binding = False
 
