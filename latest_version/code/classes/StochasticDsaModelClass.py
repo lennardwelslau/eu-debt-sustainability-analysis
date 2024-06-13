@@ -607,19 +607,7 @@ class StochasticDsaModel(DsaModel):
                          print_results=True):
         """
         Find the structural primary balance that meets all criteria after deficit has been brought below 3% and debt safeguard is satisfied.
-        """
-        print(f'Optimizing {self.country} ({self.adjustment_period}-year) ...\n')
-        # if print_results: self._print_table(f'Model params', 
-        #                  {'Country': self.country,
-        #                   'Adjustment period': self.adjustment_period,
-        #                   'Adjustment start': self.adjustment_start_year,
-        #                   'Shock frequency': self.shock_frequency,
-        #                   'Stochastic period': f"{self.stochastic_start_year}-{self.stochastic_start_year + self.stochastic_period}",
-        #                   'Estimation': f"{self.estimation} {'' if self.estimation == 'normal' else '('+self.var_method+')'}",
-        #                   'Bond level data': self.bond_data,
-        #                   'Safeguards': f"{'EDP,' if edp else ''} {'debt,' if debt_safeguard else ''} {'deficit_resilience' if deficit_resilience else ''} {'(incl. post-adjustment)' if deficit_resilience_post_adjustment else ''}"
-        #                 })
-        
+        """       
         # Initiate spb_target and dataframe dictionary
         self.save_df = save_df
         self.spb_target_dict = {}
@@ -662,10 +650,8 @@ class StochasticDsaModel(DsaModel):
             self.binding_parameter_dict['post_adjustment_steps'] = self.post_adjustment_steps
         
         # Print results
-        # if print_results: self._print_table('SPB Targets', {key: f"{value:.3f}" for key, value in self.spb_target_dict.items()})
-        # if print_results: self._print_table('Binding params', {key: value for key, value in self.binding_parameter_dict.items()})
-        # print(f'______________________________________________________________')
-        if print_results: self._print_results_tables(edp, debt_safeguard, deficit_resilience, deficit_resilience_post_adjustment)
+        if print_results: self._print_results_tables(edp, debt_safeguard, deficit_resilience)
+        
         # Save dataframe
         if self.save_df: self.df_dict['binding'] = self.df(all=True)
 
@@ -884,30 +870,6 @@ class StochasticDsaModel(DsaModel):
             print(line1 + ' ' * 5 + line2 + ' ' * 5 + line3)
 
         print('-' * table1_width + ' ' * 5 + '-' * table2_width + ' ' * 5 + '-' * table3_width)
-
-    # def _print_table(self, title, data):
-    #     """
-    #     Print a simple ascii table for results.
-    #     """
-    #     # Convert all values to string with proper formatting
-    #     formatted_data = {
-    #         key: (
-    #             np.array2string(value, precision=2, separator=', ') if isinstance(value, np.ndarray) 
-    #             else f'{value:.2f}' if isinstance(value, float) 
-    #             else str(value)
-    #         ) for key, value in data.items()}
-
-    #     # Find the maximum length of key and value
-    #     max_key_len = max(len(key) for key in formatted_data.keys())
-    #     max_val_len = max(len(value) for value in formatted_data.values())
-    #     table_width = max_key_len + max_val_len + 7
-        
-    #     # Print the table
-    #     print(f"{title.center(table_width)}")
-    #     print('-' * table_width)
-    #     for key, value in formatted_data.items():
-    #         print(f"| {key.ljust(max_key_len)} | {str(value).ljust(max_val_len)} |")
-    #     print(f"{'-' * table_width}")
 
     def find_deficit_prob(self):
         """
