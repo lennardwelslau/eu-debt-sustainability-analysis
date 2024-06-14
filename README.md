@@ -105,12 +105,12 @@ Quarterly shocks for nominal GDP growth, the primary balance, the nominal exchan
 
 ```math
 \epsilon_t^{i^{LT}} = \frac{t}{T} \sum_{q=-4t}^{4} \epsilon_q^{i^{LT}},
-'''
+```
 
 where $`T`$ denotes the average maturity of long-term debt in years, calculated as one over the historical average share of long-term debt maturing, and $`q`$ denotes the quarters of historical shocks being aggregated. Finally, shocks to the implicit interest rate on government debt are calculated as a weighted average of annualized shocks to the short- and long-term interest rates:
 
 ```math
 \epsilon_t^{iir} = \alpha^{ST} \epsilon_t^{i^{ST}} + (1 - \alpha^{ST}) \epsilon_t^{i^{LT}},
-'''
+```
 
 Here, $\alpha^{ST}$ is the share of short-term debt in total government debt, calculated based on ECB data. The variance-covariance matrix of the resulting annual shock series is then used in a joint normal distribution with zero mean from which the shocks used in the stochastic projection are drawn.
