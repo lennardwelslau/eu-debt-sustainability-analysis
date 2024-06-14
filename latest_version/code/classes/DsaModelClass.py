@@ -6,8 +6,7 @@
 # scenario debt paths following the methodology of the European Commission's Debt Sustainability 
 # Monitor. The class encompasses three primary parts:
 #
-# 1. **Data Methods:** These methods clean and combine input data. Input data can be compiled using 
-#    the provided jupyter notebook "01_data_preparation.ipynb".
+# 1. **Data Methods:** These methods clean and combine input data.
 # 2. **Projection Methods:** These methods handle the projection of economic variables such as GDP
 #    growth, primary balance, interest rates, and debt dynamics, based on different scenarios and
 #    adjustment steps.
