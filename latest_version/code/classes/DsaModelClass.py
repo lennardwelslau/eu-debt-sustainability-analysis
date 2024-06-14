@@ -940,14 +940,14 @@ class DsaModel:
         self.D[t] = np.max([self.D[t - 1] - self.repayment[t] + self.GFN[t], 0])
 
         # Distribution of short-term and long-term debt in financing needs
-        D_stn_theoretical = self.D_share_st * self.D[t]  # st debt to keep share equal to D_share_st
-        D_new_lt_theoretical = (1 - self.D_share_st) * self.D[t] - self.D_lt[t - 1] + self.repayment_lt[t]  # lt debt to keep share equal to 1 - D_share_st
-        D_share_st_issuance = D_stn_theoretical / (D_stn_theoretical + D_new_lt_theoretical)  # share of st in gfn
-
+        D_theoretical_issuance_st = self.D_share_st * self.D[t]  # st debt to keep share equal to D_share_st
+        D_theoretical_issuance_lt = np.max([(1 - self.D_share_st) * self.D[t] - (self.D_lt[t - 1] - self.repayment_lt[t] - self.repayment_lt_bond[t]), 0]) # lt debt to keep share equal to 1 - D_share_st, non-negative
+        D_issuance_share_st = D_theoretical_issuance_st / (D_theoretical_issuance_st + D_theoretical_issuance_lt)  # share of st in gfn
+        
         # Calculate short-term and long-term debt issuance
-        self.D_st[t] = D_share_st_issuance * self.GFN[t]
-        self.D_new_lt[t] = (1 - D_share_st_issuance) * self.GFN[t]
-        self.D_lt[t] = np.max([self.D_lt[t - 1] + self.D_new_lt[t] - self.repayment_lt[t] - self.repayment_lt_bond[t], 0])
+        self.D_st[t] = D_issuance_share_st * self.GFN[t]
+        self.D_new_lt[t] = (1 - D_issuance_share_st) * self.GFN[t]
+        self.D_lt[t] = np.max([self.D_lt[t - 1] - self.repayment_lt[t] - self.repayment_lt_bond[t] + self.D_new_lt[t] , 0])
 
     def _calculate_balance(self, t):
         """
