@@ -21,7 +21,7 @@ Last update: 01 June 2024
 
 ### Deterministic Debt Projections
 
-The starting point for the DSA methodology applied in this paper is the European Commission’s Debt Sustainability Monitor (DSM) 2023 (European Commission, 2024). Annex A3 of the DSM describes debt dynamics and the projection of implicit interest rate on government debt. The debt ratio in a given year, $`d_t`$, is calculated as:
+The starting point for the DSA methodology is the European Commission’s Debt Sustainability Monitor (DSM) 2023 (European Commission, 2024). Annex A3 of the DSM describes debt dynamics and the projection of implicit interest rate on government debt. The debt ratio in a given year, $`d_t`$, is calculated as:
 
 ```math
 d_t = \alpha^n \cdot d_{t-1} \cdot \frac{(1+\text{iir}_t)}{(1+g_t)} + \alpha^f \cdot d_{t-1} \cdot \frac{(1+\text{iir}_t)}{(1+g_t)} \cdot \frac{e_t}{e_{t-1}} - pb_t + f_t,
