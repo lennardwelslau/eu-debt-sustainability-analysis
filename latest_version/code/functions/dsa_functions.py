@@ -16,9 +16,26 @@ def run_dsa(
         adjustment_periods, 
         results_dict,
         folder_name, 
-        edp=True, 
-        debt_safeguard=True, 
-        deficit_resilience=True
+        edp=True, # apply EDP 
+        debt_safeguard=True, # apply debt safeguard
+        deficit_resilience=True, # apply deficit resilience safeguard
+        stochastic_only=False, # use only stochastic projection
+        start_year=2023, # start year of projection, first year is baseline value
+        end_year=2070, # end year of projection
+        adjustment_start_year=2025, # start year of linear spb_bca adjustment
+        ageing_cost_period=10, # number of years for ageing cost adjustment
+        shock_sample_start=2000, # start year of shock sample
+        stochastic_start_year=None, # start year of stochastic projection
+        stochastic_period=5, # number of years for stochastic projection
+        shock_frequency='quarterly', # frequency of shocks, 'quarterly' or 'annual'
+        estimation='normal', # estimation method for covariance matrix, 'normal' or 'var'
+        var_method='cholesky', # method for drawing shocks if estimation is 'var', 'cholesky' or 'bootstrap'
+        fiscal_multiplier=0.75, # size of the fiscal multiplier
+        growth_policy=False, # Growth policy counterfactual 
+        growth_policy_effect=0, # Total effect of growth policy on GDP growth
+        growth_policy_cost=0, # Total cost of growth policy as percent of GDP
+        growth_policy_period=1, # Period of growth policy counterfactual
+        bond_data=False, # Use bond level data for repayment profile,
         ):
     """
     Runs DSA for all EU countries and saves results individually.
@@ -34,18 +51,44 @@ def run_dsa(
         for adjustment_period in adjustment_periods:
             dsa = StochasticDsaModel(
                 country=country, 
-                adjustment_period=adjustment_period
+                adjustment_period=adjustment_period,
+                start_year=2023, # start year of projection, first year is baseline value
+                end_year=2070, # end year of projection
+                adjustment_start_year=2025, # start year of linear spb_bca adjustment
+                ageing_cost_period=10, # number of years for ageing cost adjustment
+                shock_sample_start=2000, # start year of shock sample
+                stochastic_start_year=None, # start year of stochastic projection
+                stochastic_period=5, # number of years for stochastic projection
+                shock_frequency='quarterly', # frequency of shocks, 'quarterly' or 'annual'
+                estimation='normal', # estimation method for covariance matrix, 'normal' or 'var'
+                var_method='cholesky', # method for drawing shocks if estimation is 'var', 'cholesky' or 'bootstrap'
+                fiscal_multiplier=0.75, # size of the fiscal multiplier
+                growth_policy=False, # Growth policy counterfactual 
+                growth_policy_effect=0, # Total effect of growth policy on GDP growth
+                growth_policy_cost=0, # Total cost of growth policy as percent of GDP
+                growth_policy_period=1, # Period of growth policy counterfactual
+                bond_data=False, # Use bond level data for repayment profile
                 )
-            dsa.find_spb_binding(
-                save_df=True, 
-                edp=edp, 
-                debt_safeguard=debt_safeguard, 
-                deficit_resilience=deficit_resilience,
-                deficit_resilience_post_adjustment=False
-                )
-            results_dict[country][adjustment_period]['spb_target_dict'] = dsa.spb_target_dict
-            results_dict[country][adjustment_period]['df_dict'] = dsa.df_dict
-            results_dict[country][adjustment_period]['binding_parameter_dict'] = dsa.binding_parameter_dict  
+            
+            # If stochastic_only is True, only run stochastic projection
+            if stochastic_only:
+                dsa.find_spb_stochastic()
+                results_dict[country][adjustment_period]['spb_target_dict'] = {'stochastic': dsa.spb_target}
+                results_dict[country][adjustment_period]['df_dict'] = {'stochastic': dsa.df(all=True)}
+
+            # If stochastic_only is False, run full DSA with deterministic and stochastic projection
+            else:
+                dsa.find_spb_binding(
+                    save_df=True, 
+                    edp=edp, 
+                    debt_safeguard=debt_safeguard, 
+                    deficit_resilience=deficit_resilience,
+                    deficit_resilience_post_adjustment=False
+                    )
+                results_dict[country][adjustment_period]['spb_target_dict'] = dsa.spb_target_dict
+                results_dict[country][adjustment_period]['df_dict'] = dsa.df_dict
+                results_dict[country][adjustment_period]['binding_parameter_dict'] = dsa.binding_parameter_dict 
+
             dsa.project()
             results_dict[country][adjustment_period]['df_dict']['no_policy_change'] = dsa.df(all=True)
 

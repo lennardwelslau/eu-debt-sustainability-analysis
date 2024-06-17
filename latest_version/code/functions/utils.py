@@ -3,8 +3,6 @@ import os
 import numpy as np
 import pandas as pd
 pd.options.display.float_format = "{:,.3f}".format
-import time
-import pickle
 
 # Import DSA model class and stochastic subclass
 from classes import *
@@ -45,10 +43,10 @@ def save_results(
     """
     Saves DSA results to excel.
     """
-    _save_spbs(results_dict, folder_name)
+    _save_spb_table(results_dict, folder_name)
     if save_dfs == True: _save_dfs(results_dict, folder_name)
 
-def _save_spbs(results_dict, folder_name):
+def _save_spb_table(results_dict, folder_name):
     """
     Saves spb_targets for each instance in output folder.
     """    
@@ -64,8 +62,9 @@ def _save_spbs(results_dict, folder_name):
     df_spb = df_spb.pivot(index=['country', 'adjustment_period'], columns='scenario', values='spbstar').reset_index()
     
     # Get binding DSA scenario
-    col_list = ['main_adjustment', 'adverse_r_g', 'lower_spb', 'financial_stress', 'stochastic']
-    df_spb['binding_dsa'] = df_spb[col_list].max(axis=1)
+    dsa_col_list = ['main_adjustment', 'adverse_r_g', 'lower_spb', 'financial_stress', 'stochastic']
+    dsa_col_list = [col for col in dsa_col_list if col in df_spb.columns]
+    df_spb['binding_dsa'] = df_spb[dsa_col_list].max(axis=1)
     
     # Get binding safeguard scenario
     safeguard_col_list = ['deficit_reduction', 'debt_safeguard', 'deficit_resilience']
@@ -123,6 +122,7 @@ def _save_spbs(results_dict, folder_name):
                 'binding_safeguard',
                 'binding'
                 ]
+    
     for col in col_order:
         if col not in df_spb.columns: df_spb[col] = np.nan
     df_spb = df_spb[col_order].sort_values(['adjustment_period', 'country']).round(3)

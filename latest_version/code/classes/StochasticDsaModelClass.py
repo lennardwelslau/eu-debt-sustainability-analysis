@@ -189,8 +189,10 @@ class StochasticDsaModel(DsaModel):
         number of simulations, draw_period is the number of consecutive years or quarters drawn, and num_variables is the number of shock variables.
         """
         # Define sample for VAR model, exclude exr_eur_shock for EA countries and DNK
-        ea_countries = ['AUT', 'BEL', 'DNK', 'HRV', 'CYP', 'EST', 'FIN', 'FRA', 'DEU', 'GRC', 'IRL', 'ITA', 'LVA', 'LTU', 'LUX', 'MLT', 'NLD', 'PRT', 'SVK', 'SVN', 'ESP']
-        var_sample = self.df_shocks if self.country not in ea_countries else self.df_shocks.drop(columns=['EXR_EUR'])
+        ea_countries = ['AUT', 'BEL', 'BGR', 'DNK', 'HRV', 'CYP', 'EST', 'FIN', 'FRA', 'DEU', 'GRC', 'IRL', 'ITA', 'LVA', 'LTU', 'LUX', 'MLT', 'NLD', 'PRT', 'SVK', 'SVN', 'ESP']
+        var_sample = self.df_shocks 
+        if self.country in ea_countries: var_sample.drop(columns=['EXR_EUR'], inplace=True) 
+        elif self.country == 'USA': var_sample.drop(columns=['EXR_USD'], inplace=True)
 
         # Estimate VAR model 
         varmodel = VAR(var_sample)
@@ -222,10 +224,13 @@ class StochasticDsaModel(DsaModel):
             residual_draws=residual_draws
             )
 
-        # Add zero exr_eur_shock for EA countries and DNK
+        # Add zero exchange rate shock if it was removed before
         if self.country in ea_countries:
             exr_eur_shock = np.zeros((self.N, self.draw_period, 1))
             self.shocks_sim_draws = np.concatenate((exr_eur_shock, self.shocks_sim_draws), axis=2)
+        elif self.country == 'USA':
+            exr_usd_shock = np.zeros((self.N, self.draw_period, 1))
+            self.shocks_sim_draws = np.concatenate((self.shocks_sim_draws[:,:,:1], exr_usd_shock, self.shocks_sim_draws[:,:,1:]), axis=2)
 
     def _aggregate_shocks_quarterly(self):
         """
@@ -448,10 +453,10 @@ class StochasticDsaModel(DsaModel):
         ax.plot(years, bl_var, ls='--', color='red', label='Baseline')
 
         # Plot layout
-        ax.legend(loc='upper left')
+        ax.legend(loc='best')
         ax.xaxis.grid(False)
         ax.set_ylabel(var)
-        ax.set_title(f'{self.country}_{self.adjustment_period}')
+        ax.set_title(f'{self.stochastic_period}-year fanchart for {self.country} (adjustment {self.adjustment_start_year}-{self.adjustment_end_year})')
 
         # Saveplot data in a dataframe if self.save_df is specified
         self.df_fanchart = pd.DataFrame({'year': years, 'baseline': bl_var})
@@ -813,7 +818,7 @@ class StochasticDsaModel(DsaModel):
 
     def _print_results_tables(self, edp=True, debt_safeguard=True, deficit_resilience=True, deficit_resilience_post_adjustment=False):
         """
-        Print three ascii tables side by side.
+        Print two ascii tables side by side and one table underneath, ensuring the lower table is as wide as the top two combined.
         """
         # Prepare data for the tables
         model_params = {
@@ -835,76 +840,85 @@ class StochasticDsaModel(DsaModel):
             ) for key, value in self.binding_parameter_dict.items() if key != 'post_adjustment_steps'
         }
 
-        # Check for adjustment period > 7 and add new keys if necessary
-        if self.adjustment_period > 7 and self.adjustment_period <= 14:
+        # Helper function to split steps into chunks and name them based on ranges
+        def split_steps(key, steps, chunk_size=7):
+            for i in range(0, len(steps), chunk_size):
+                part_key = f"{key} ({i + 1}-{min(i + chunk_size, len(steps))})"
+                binding_params[part_key] = np.array2string(steps[i:i + chunk_size], precision=3, separator=', ').replace('[', '').replace(']', '')
+
+        # Check for adjustment period and split steps if necessary
+        if self.adjustment_period > 7:
             del binding_params['adjustment_steps']
-            binding_params['adjustment_steps'] = np.array2string(self.adjustment_steps[:7], precision=3, separator=', ').replace('[', '').replace(']', '')
-            binding_params['adjustment_steps_continued'] = np.array2string(self.adjustment_steps[7:], precision=3, separator=', ').replace('[', '').replace(']', '')
+            split_steps('adjustment_steps', self.adjustment_steps)
             if 'edp_steps' in self.binding_parameter_dict:
                 del binding_params['edp_steps']
-                binding_params['edp_steps'] = np.array2string(self.edp_steps[:7], precision=3, separator=', ').replace('[', '').replace(']', '')
-                binding_params['edp_steps_continued'] = np.array2string(self.edp_steps[7:], precision=3, separator=', ').replace('[', '').replace(']', '')
-        elif self.adjustment_period > 14:
-            del binding_params['adjustment_steps']
-            binding_params['adjustment_steps'] = np.array2string(self.adjustment_steps[:7], precision=3, separator=', ').replace('[', '').replace(']', '')
-            binding_params['adjustment_steps_continued'] = np.array2string(self.adjustment_steps[7:14], precision=3, separator=', ').replace('[', '').replace(']', '')
-            binding_params['adjustment_steps_continued2'] = np.array2string(self.adjustment_steps[14:], precision=3, separator=', ').replace('[', '').replace(']', '')
-            if 'edp_steps' in self.binding_parameter_dict:
-                del binding_params['edp_steps']
-                binding_params['edp_steps'] = np.array2string(self.edp_steps[:7], precision=3, separator=', ').replace('[', '').replace(']', '')
-                binding_params['edp_steps_continued'] = np.array2string(self.edp_steps[7:14], precision=3, separator=', ').replace('[', '').replace(']', '')
-                binding_params['edp_steps_continued2'] = np.array2string(self.edp_steps[14:], precision=3, separator=', ').replace('[', '').replace(']', '')
+                split_steps('edp_steps', self.edp_steps)
+            if 'deficit_resilience_steps' in self.binding_parameter_dict:
+                del binding_params['deficit_resilience_steps']
+                split_steps('deficit_resilience_steps', self.deficit_resilience_steps)
 
         # Convert all values to string with proper formatting
         formatted_model_params = {key: str(value) for key, value in model_params.items()}
         formatted_spb_targets = {key: str(value) for key, value in spb_targets.items()}
         formatted_binding_params = {key: str(value) for key, value in binding_params.items()}
 
-        # Find the maximum length of key and value for all tables
-        max_key_len1 = max(len(key) for key in formatted_model_params.keys())
-        max_val_len1 = max(len(value) for value in formatted_model_params.values())
-        max_key_len2 = max(len(key) for key in formatted_spb_targets.keys())
-        max_val_len2 = max(len(value) for value in formatted_spb_targets.values())
-        max_key_len3 = max(len(key) for key in formatted_binding_params.keys())
-        max_val_len3 = max(len(value) for value in formatted_binding_params.values())
+        # Function to print formatted table
+        def print_table(title, data, total_width=None):
+            max_key_len = max(len(key) for key in data.keys())
+            max_val_len = total_width - max_key_len - 2 or max(len(value) for value in data.values()) 
+            table_width = max_key_len + max_val_len + 2
+            total_width = total_width or table_width
 
-        table1_width = max_key_len1 + max_val_len1 + 7
-        table2_width = max_key_len2 + max_val_len2 + 7
-        table3_width = max_key_len3 + max_val_len3 + 7
-        total_width = table1_width + table2_width + table3_width + 10  # 10 spaces between tables
+            print(f"{title.center(total_width)}")
+            print("=" * total_width)
+            for key, value in data.items():
+                line = f"{key.ljust(max_key_len)}  {value.rjust(max_val_len)}"
+                print(line.ljust(total_width))
+            print("=" * total_width)
+            print()
 
-        # Print title and separator for combined tables
-        print(f"{'Model Params'.center(table1_width)}{' ' * 5}{'SPB Targets'.center(table2_width)}{' ' * 5}{'Binding Params'.center(table3_width)}")
-        print('-' * table1_width + ' ' * 5 + '-' * table2_width + ' ' * 5 + '-' * table3_width)
+        # Function to print two tables side by side
+        def print_two_tables_side_by_side(title1, data1, title2, data2):
+            max_key_len1 = max(len(key) for key in data1.keys())
+            max_val_len1 = max(len(value) for value in data1.values())
+            max_key_len2 = max(len(key) for key in data2.keys())
+            max_val_len2 = max(len(value) for value in data2.values())
+            total_width1 = max_key_len1 + max_val_len1 + 2
+            total_width2 = max_key_len2 + max_val_len2 + 2
+            total_width = total_width1 + total_width2 + 5
 
-        # Print the combined tables
-        keys1 = list(formatted_model_params.keys())
-        keys2 = list(formatted_spb_targets.keys())
-        keys3 = list(formatted_binding_params.keys())
-        max_rows = max(len(keys1), len(keys2), len(keys3))
-        for i in range(max_rows):
-            line1 = line2 = line3 = ""
-            if i < len(keys1):
-                key1 = keys1[i]
-                value1 = formatted_model_params[key1]
-                line1 = f"| {key1.ljust(max_key_len1)} | {value1.ljust(max_val_len1)} |"
-            else:
-                line1 = " " * table1_width
-            if i < len(keys2):
-                key2 = keys2[i]
-                value2 = formatted_spb_targets[key2]
-                line2 = f"| {key2.ljust(max_key_len2)} | {value2.ljust(max_val_len2)} |"
-            else:
-                line2 = " " * table2_width
-            if i < len(keys3):
-                key3 = keys3[i]
-                value3 = formatted_binding_params[key3]
-                line3 = f"| {key3.ljust(max_key_len3)} | {value3.ljust(max_val_len3)} |"
-            else:
-                line3 = " " * table3_width
-            print(line1 + ' ' * 5 + line2 + ' ' * 5 + line3)
+            # Print titles
+            print(f"{title1.center(total_width1)}{' ' * 5}{title2.center(total_width2)}")
+            print(f"{'=' * total_width1}{' ' * 5}{'=' * total_width2}")
 
-        print('-' * table1_width + ' ' * 5 + '-' * table2_width + ' ' * 5 + '-' * table3_width)
+            # Print data rows side by side
+            keys1 = list(data1.keys())
+            keys2 = list(data2.keys())
+            max_rows = max(len(keys1), len(keys2))
+            for i in range(max_rows):
+                line1 = line2 = ""
+                if i < len(keys1):
+                    key1 = keys1[i]
+                    value1 = data1[key1]
+                    line1 = f"{key1.ljust(max_key_len1)}  {value1.rjust(max_val_len1)}"
+                else:
+                    line1 = " " * total_width1
+                if i < len(keys2):
+                    key2 = keys2[i]
+                    value2 = data2[key2]
+                    line2 = f"{key2.ljust(max_key_len2)}  {value2.rjust(max_val_len2)}"
+                else:
+                    line2 = " " * total_width2
+                print(f"{line1}{' ' * 5}{line2}")
+            print(f"{'=' * total_width1}{' ' * 5}{'=' * total_width2}")
+            print()
+            return total_width
+
+        # Print the first two tables side by side and get the total width
+        total_width = print_two_tables_side_by_side('Model Params', formatted_model_params, 'SPB Targets', formatted_spb_targets)
+
+        # Print the third table underneath with the combined width of the first two tables
+        print_table('Binding Params', formatted_binding_params, total_width)
 
     def find_deficit_prob(self):
         """

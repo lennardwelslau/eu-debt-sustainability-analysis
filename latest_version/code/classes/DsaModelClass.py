@@ -6,7 +6,8 @@
 # scenario debt paths following the methodology of the European Commission's Debt Sustainability 
 # Monitor. The class encompasses three primary parts:
 #
-# 1. **Data Methods:** These methods clean and combine input data.
+# 1. **Data Methods:** These methods clean and combine input data. Input data can be compiled using 
+#    the provided jupyter notebook "01_data_preparation.ipynb".
 # 2. **Projection Methods:** These methods handle the projection of economic variables such as GDP
 #    growth, primary balance, interest rates, and debt dynamics, based on different scenarios and
 #    adjustment steps.
@@ -65,6 +66,7 @@ class DsaModel:
         self.adjustment_period = adjustment_period # adjustment period for structural primary balance, for COM 4 or 7 years
         self.adjustment_start_year = adjustment_start_year # start year of adjustment period
         self.adjustment_start = self.adjustment_start_year - start_year # start (T+x) of adjustment period
+        self.adjustment_end_year = self.adjustment_start_year + adjustment_period - 1 # end year of adjustment period
         self.adjustment_end = self.adjustment_start_year + adjustment_period - start_year - 1  # end (T+x) of adjustment period
         self.ageing_cost_period = ageing_cost_period # number of years during which ageing costs have to be accounted for by spb adjustment
         self.fiscal_multiplier = fiscal_multiplier # fiscal multiplier for fiscal adjustment
