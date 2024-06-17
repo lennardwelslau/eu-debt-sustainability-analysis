@@ -173,7 +173,7 @@ def run_consecutive_dsa(
             adjustment_steps = dsa.adjustment_steps
         else:
             dsa.predefined_adjustment_steps = np.concatenate([adjustment_steps, np.nan * np.ones(consecutive_adjustment_period)])
-            dsa.find_spb_binding(deficit_resilience=False, deficit_resilience_post_adjustment=False)
+            dsa.find_spb_binding()
             adjustment_steps = np.concatenate([adjustment_steps, dsa.adjustment_steps[len(adjustment_steps):]])
         results[f'adjustment_period_{i+1}'] = dsa.spb_target_dict
 
