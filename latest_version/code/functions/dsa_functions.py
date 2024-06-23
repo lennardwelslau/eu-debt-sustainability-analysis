@@ -16,6 +16,7 @@ def run_dsa(
         adjustment_periods, 
         results_dict,
         folder_name, 
+        edp_countries=None, # countries to apply EDP to
         edp=True, # apply EDP 
         debt_safeguard=True, # apply debt safeguard
         deficit_resilience=True, # apply deficit resilience safeguard
@@ -48,26 +49,28 @@ def run_dsa(
         estimated_remaining_time = round((elapsed_time / counter) * (total_countries - counter) / 60, 1)
         print(f'\n... optimising {country}, {counter} of {total_countries}, estimated remaining time: {estimated_remaining_time} minutes\n')
         
+        if edp_countries:
+            edp = True if country in edp_countries else False
         for adjustment_period in adjustment_periods:
             dsa = StochasticDsaModel(
                 country=country, 
                 adjustment_period=adjustment_period,
-                start_year=2023, # start year of projection, first year is baseline value
-                end_year=2070, # end year of projection
-                adjustment_start_year=2025, # start year of linear spb_bca adjustment
-                ageing_cost_period=10, # number of years for ageing cost adjustment
-                shock_sample_start=2000, # start year of shock sample
-                stochastic_start_year=None, # start year of stochastic projection
-                stochastic_period=5, # number of years for stochastic projection
-                shock_frequency='quarterly', # frequency of shocks, 'quarterly' or 'annual'
-                estimation='normal', # estimation method for covariance matrix, 'normal' or 'var'
-                var_method='cholesky', # method for drawing shocks if estimation is 'var', 'cholesky' or 'bootstrap'
-                fiscal_multiplier=0.75, # size of the fiscal multiplier
-                growth_policy=False, # Growth policy counterfactual 
-                growth_policy_effect=0, # Total effect of growth policy on GDP growth
-                growth_policy_cost=0, # Total cost of growth policy as percent of GDP
-                growth_policy_period=1, # Period of growth policy counterfactual
-                bond_data=False, # Use bond level data for repayment profile
+                start_year=start_year, # start year of projection, first year is baseline value
+                end_year=end_year, # end year of projection
+                adjustment_start_year=adjustment_start_year, # start year of linear spb_bca adjustment
+                ageing_cost_period=ageing_cost_period, # number of years for ageing cost adjustment
+                shock_sample_start=shock_sample_start, # start year of shock sample
+                stochastic_start_year=stochastic_start_year, # start year of stochastic projection
+                stochastic_period=stochastic_period, # number of years for stochastic projection
+                shock_frequency=shock_frequency, # frequency of shocks, 'quarterly' or 'annual'
+                estimation=estimation, # estimation method for covariance matrix, 'normal' or 'var'
+                var_method=var_method, # method for drawing shocks if estimation is 'var', 'cholesky' or 'bootstrap'
+                fiscal_multiplier=fiscal_multiplier, # size of the fiscal multiplier
+                growth_policy=growth_policy, # Growth policy counterfactual 
+                growth_policy_effect=growth_policy_effect, # Total effect of growth policy on GDP growth
+                growth_policy_cost=growth_policy_cost, # Total cost of growth policy as percent of GDP
+                growth_policy_period=growth_policy_period, # Period of growth policy counterfactual
+                bond_data=bond_data, # Use bond level data for repayment profile
                 )
             
             # If stochastic_only is True, only run stochastic projection
@@ -163,7 +166,6 @@ def run_consecutive_dsa(
     """
     Performs DSA for consecutive adjustment periods and returns results in a DataFrame.
     """
-    
     results = {}
     for i in range(number_of_adjustment_periods):
         adjustment_period = initial_adjustment_period + consecutive_adjustment_period * i
@@ -173,7 +175,7 @@ def run_consecutive_dsa(
             adjustment_steps = dsa.adjustment_steps
         else:
             dsa.predefined_adjustment_steps = np.concatenate([adjustment_steps, np.nan * np.ones(consecutive_adjustment_period)])
-            dsa.find_spb_binding()
+            dsa.find_spb_binding(deficit_resilience=False, deficit_resilience_post_adjustment=False)
             adjustment_steps = np.concatenate([adjustment_steps, dsa.adjustment_steps[len(adjustment_steps):]])
         results[f'adjustment_period_{i+1}'] = dsa.spb_target_dict
 

@@ -84,8 +84,8 @@ class StochasticDsaModel(DsaModel):
         if stochastic_start_year is None: 
             stochastic_start_year = adjustment_start_year + adjustment_period
         self.stochastic_start_year = stochastic_start_year
-        self.stochastic_start = stochastic_start_year - start_year
         self.stochastic_period = stochastic_period
+        self.stochastic_start = stochastic_start_year - start_year
         self.stochastic_end = self.stochastic_start + stochastic_period - 1 
         if shock_frequency == 'quarterly':
             self.draw_period = stochastic_period * 4 
@@ -644,7 +644,11 @@ class StochasticDsaModel(DsaModel):
         self._get_binding()
 
         # Apply EDP and safeguards
-        if edp: self._apply_edp()
+        if edp: 
+            self._apply_edp()
+        else:
+            self.edp_period = 0
+            self.edp_end = self.adjustment_start - 1
         if debt_safeguard: self._apply_debt_safeguard()
         if deficit_resilience: self._apply_deficit_resilience()
         if deficit_resilience_post_adjustment: self._apply_deficit_resilience_post_adjustment()
@@ -785,7 +789,7 @@ class StochasticDsaModel(DsaModel):
         """
         # For countries with high deficit, find SPB target that brings and keeps deficit below 1.5%
         if (np.any(self.d[self.adjustment_start-1:self.adjustment_end+1] > 60)
-            or np.any(self.ob[self.adjustment_start-1:self.adjustment_end+1] < -3)):
+            or self.ob[self.adjustment_start-1] < -3):
                 self.find_spb_deficit_resilience()
                 
         # Save results and print update

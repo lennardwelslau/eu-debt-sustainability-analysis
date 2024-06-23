@@ -5,7 +5,7 @@ pd.options.display.float_format = "{:,.3f}".format
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
 import seaborn as sns
-sns.set_style('whitegrid')
+sns.set_style('white')
 
 # Import DSA model class and stochastic subclass
 from classes import *
