@@ -98,12 +98,9 @@ def _calc_annex_charts(results_dict):
 
             # Run fanchart for chart c)
             try:
-                if country == 'BGR':
-                    raise Exception('BGR has no viable fanchart because of restricted sample period')
                 dsa = StochasticDsaModel(country=country, adjustment_period=adjustment_period)
                 dsa.project(
                     adjustment_steps=binding_adjustment_steps, 
-                    # post_adjustment_steps=binding_post_adjustment
                     )            
                 dsa.simulate()
                 dsa.fanchart(show=False)
