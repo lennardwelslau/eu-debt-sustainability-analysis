@@ -158,7 +158,7 @@ def run_inv_scenario(
 
 def run_consecutive_dsa(
         country,
-        start_year=2024, 
+        start_year=2025, 
         initial_adjustment_period=7, 
         consecutive_adjustment_period=4, 
         number_of_adjustment_periods=3, 
@@ -188,10 +188,11 @@ def run_consecutive_dsa(
 
         # Adding vertical spans
         colors = sns.color_palette('tab10')
-        for i in range(number_of_adjustment_periods):
+        plt.axvspan(start_year, start_year + initial_adjustment_period, color=colors[0], alpha=0.1, label='adj. 1')
+        for i in range(number_of_adjustment_periods-1):
             start = start_year + initial_adjustment_period + consecutive_adjustment_period * i
             end = start_year + initial_adjustment_period + consecutive_adjustment_period * (i + 1)
-            plt.axvspan(start - consecutive_adjustment_period, end, color=colors[i], alpha=0.1, label=f'adj. period {i+1}')
+            plt.axvspan(start, end, color=colors[i+1], alpha=0.1, label=f'adj. {i+2}')
 
         # hline for 3 and 1.5
         ax.axhline(-3, color='black', linestyle='--', label='3%', alpha=0.5)
