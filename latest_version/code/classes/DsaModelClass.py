@@ -50,7 +50,7 @@ class DsaModel:
             adjustment_period=4,  # number of years for linear spb_bca adjustment
             adjustment_start_year=2025,  # start year of linear spb_bca adjustment
             ageing_cost_period=10,  # number of years for ageing cost adjustment after adjustment period
-            fiscal_multiplier=0.75, # fiscal multiplier for fiscal adjustment
+            fm=0.75, # fiscal multiplier for fiscal adjustment
             growth_policy=False, # True if effet of growth enhancing policy is applied
             growth_policy_effect=0, # effect of growth policy on GDP growth
             growth_policy_cost=0, # cost of growth policy as share of GDP
@@ -69,7 +69,7 @@ class DsaModel:
         self.adjustment_end_year = self.adjustment_start_year + adjustment_period - 1 # end year of adjustment period
         self.adjustment_end = self.adjustment_start_year + adjustment_period - start_year - 1  # end (T+x) of adjustment period
         self.ageing_cost_period = ageing_cost_period # number of years during which ageing costs have to be accounted for by spb adjustment
-        self.fiscal_multiplier = fiscal_multiplier # fiscal multiplier for fiscal adjustment
+        self.fm = fm # fiscal multiplier for fiscal adjustment
         self.growth_policy = growth_policy # True if growth policy is applied
         self.growth_policy_effect = growth_policy_effect # effect of growth policy on GDP growth
         self.growth_policy_cost = growth_policy_cost # cost of growth policy as share of GDP
@@ -98,8 +98,8 @@ class DsaModel:
 
         # Initialize model variables related to primary balance and components
         self.ageing_cost = np.full(self.projection_period, np.nan, dtype=np.float64)  # ageing cost
-        # self.property_income = np.full(self.projection_period, np.nan, dtype=np.float64)  # property income
-        # self.property_income_component = np.full(self.projection_period, np.nan, dtype=np.float64)  # property income component of primary balance
+        self.property_income = np.full(self.projection_period, np.nan, dtype=np.float64)  # property income
+        self.property_income_component = np.full(self.projection_period, np.nan, dtype=np.float64)  # property income component of primary balance
         self.cyclical_component = np.full(self.projection_period, 0, dtype=np.float64)  # cyclical_component component of primary balance
         self.ageing_component = np.full(self.projection_period, 0, dtype=np.float64)  # ageing_component component of primary balance
         self.PB = np.full(self.projection_period, np.nan, dtype=np.float64)  # primary balance
@@ -112,8 +112,11 @@ class DsaModel:
         self.GFN = np.full(self.projection_period, np.nan, dtype=np.float64)  # gross financing needs
         self.SF = np.full(self.projection_period, 0, dtype=np.float64)  # stock-flow adjustment
         self.sf = np.full(self.projection_period, 0, dtype=np.float64)  # stock-flow adjustment over GDP
-        self.ob = np.full(self.projection_period, np.nan, dtype=np.float64)  # fiscal balance
-        self.sb = np.full(self.projection_period, np.nan, dtype=np.float64)  # structural balance
+        self.OB = np.full(self.projection_period, np.nan, dtype=np.float64)  # fiscal balance
+        self.ob = np.full(self.projection_period, np.nan, dtype=np.float64)  # fiscal balance over GDP
+        self.SB = np.full(self.projection_period, np.nan, dtype=np.float64)  # structural balance
+        self.sb = np.full(self.projection_period, np.nan, dtype=np.float64)  # structural balance over GDP
+        self.net_expenditure_growth = np.full(self.projection_period, np.nan, dtype=np.float64)  # expenditure growth rate
 
         # Initialize model variables related to debt and interest variables
         self.D = np.full(self.projection_period, 0, dtype=np.float64)  # total debt
@@ -176,6 +179,7 @@ class DsaModel:
         self._clean_stock_flow()
         self._clean_exchange_rate()
         self._clean_ageing_cost()
+        self._clean_property_income()
 
     def _clean_rgdp_pot(self):
         """
@@ -358,36 +362,7 @@ class DsaModel:
         # Import bond repayment data
         for t, y in enumerate(range(self.start_year, self.end_year + 1)):
             self.repayment_lt_bond[t] = self.df_deterministic_data.loc[y, 'BOND_REPAYMENT']
-        
-        # Approximate steady state original maturity structure
-        # self._approximate_original_maturity_structure()
-    
-    # def _approximate_original_maturity_structure(self):
-    #     """
-    #     Approximate non-linear original maturity structure of the debt stock.
-    #     """
-    #     # Create a DataFrame from the repayment array, restrict to max 30 year maturity
-    #     self.df_maturity_structure = pd.DataFrame(self.repayment_lt_bond, columns=['repayment']).fillna(0)
-    #     self.df_maturity_structure.iloc[30] += self.df_maturity_structure.iloc[31:].sum()
-    #     self.df_maturity_structure = self.df_maturity_structure.iloc[:31]
-        
-    #     # Normalize repayment to ensure it sums to 1
-    #     self.df_maturity_structure['repayment_share'] = self.df_maturity_structure['repayment'] / self.df_maturity_structure['repayment'].sum()
-        
-    #     # Fit a monotonous line that approximates residual maturity share
-    #     def func(x, a, b):
-    #         return 1 / (1 + a * x ) + b
-    #     mat = np.array(self.df_maturity_structure.index)
-    #     res_mat_share = np.array(self.df_maturity_structure['repayment_share'])
-    #     popt, pcov = curve_fit(func, mat, res_mat_share)
-    #     self.df_maturity_structure['residual_maturity_fit'] = func(mat, *popt) # Fit the curve
-    #     self.df_maturity_structure['residual_maturity_fit'].clip(lower=0, inplace=True) # Ensure no negative values
-        
-    #     # Calculate the approximate original as the normalized difference between consecutive residual maturity shares
-    #     # This ensures that issuance of new debt closely replicates the current residual maturity structure
-    #     self.df_maturity_structure['original_maturity_appr'] = self.df_maturity_structure['residual_maturity_fit'].diff()
-    #     self.df_maturity_structure['original_maturity_appr'] = self.df_maturity_structure['original_maturity_appr'] / self.df_maturity_structure['original_maturity_appr'].sum()
-    
+
     def _clean_pb(self):
         """
         Clean structural primary balance.
@@ -409,7 +384,10 @@ class DsaModel:
 
         # Get budget balance semi-elasticity
         self.budget_balance_elasticity = self.df_deterministic_data.loc[0, 'BUDGET_BALANCE_ELASTICITY']
-    
+
+        # Get primary expenditure share
+        self.expenditure_share = self.df_deterministic_data.loc[2024, 'PRIMARY_EXPENDITURE_SHARE']
+
     def _clean_implicit_interest_rate(self):
         """
         Clean implicit interest rate.
@@ -470,13 +448,12 @@ class DsaModel:
         for t, y in enumerate(range(self.start_year, self.end_year + 1)):
             self.ageing_cost[t] = self.df_deterministic_data.loc[y, 'AGEING_COST']
 
-
-    # def _clean_property_income(self):
-    #     """
-    #     Clean property income data.
-    #     """
-    #     for t, y in enumerate(range(self.start_year, self.end_year + 1)):
-    #         self.property_income[t] = self.df_property_income.loc[y]
+    def _clean_property_income(self):
+        """
+        Clean property income data.
+        """
+        for t, y in enumerate(range(self.start_year, self.end_year + 1)):
+            self.property_income[t] = self.df_deterministic_data.loc[y, 'PROPERTY_INCOME']
 
 # ========================================================================================= #
 #                                   PROJECTION METHODS                                      #
@@ -487,7 +464,6 @@ class DsaModel:
                 adjustment_steps=None,  # list of annual adjustment steps during adjustment
                 edp_steps=None,  # list of annual adjustment steps during EDP
                 deficit_resilience_steps=None,  # list of years during adjustment where minimum step size is enforced
-                post_adjustment_steps=None,  # list of years after adjustment where minimum step size is enforced
                 scenario='main_adjustment',  # scenario parameter, needed for DSA criteria
                 ):
         """
@@ -500,11 +476,14 @@ class DsaModel:
         # Set spb_target
         if (spb_target is None
                 and adjustment_steps is None):
+            self.policy_change = False
             self.spb_target = self.spb_bca[self.adjustment_start - 1]
         elif (spb_target is None
               and adjustment_steps is not None):
+            self.policy_change = True
             self.spb_target = self.spb_bca[self.adjustment_start - 1] + adjustment_steps.sum()
         else:
+            self.policy_change = True
             self.spb_target = spb_target
 
         # Set adjustment steps
@@ -536,12 +515,6 @@ class DsaModel:
             self.deficit_resilience_steps = np.full((self.adjustment_period,), np.nan, dtype=np.float64)
         else:
             self.deficit_resilience_steps = deficit_resilience_steps
-
-        # Set post adjustment steps
-        if post_adjustment_steps is None:
-            self.post_adjustment_steps = np.full((self.projection_period - self.adjustment_end - 1,), 0, dtype=np.float64)
-        else:
-            self.post_adjustment_steps = post_adjustment_steps
 
         # Set scenario parameter
         self.scenario = scenario
@@ -630,7 +603,7 @@ class DsaModel:
             if t in range(self.adjustment_start, self.adjustment_end + 1):
                 self.spb_bca[t] = self.spb_bca[t - 1] + self.adjustment_steps[t - self.adjustment_start]
             else:
-                self.spb_bca[t] = self.spb_bca[t - 1] + self.post_adjustment_steps[t - self.adjustment_end - 1]
+                self.spb_bca[t] = self.spb_bca[t - 1]
 
         # Save adjustment step size
         self.spb_bca_adjustment[1:] = np.diff(self.spb_bca)
@@ -717,10 +690,10 @@ class DsaModel:
 
     def _calculate_rgdp(self, t):
         """
-        Calcualtes real GDP and real growth
+        Calcualtes real GDP and real growth, assumes persistence in fm effect leading to output gap closing in 3 years
         """
         # Fiscal multiplier effect from change in SPB relative to baseline
-        self.fm_effect[t] = self.fiscal_multiplier * ((self.spb_bca[t] - self.spb_bca[t - 1]) - (self.spb_bl[t] - self.spb_bl[t - 1]))
+        self.fm_effect[t] = self.fm * ((self.spb_bca[t] - self.spb_bca[t - 1]) - (self.spb_bl[t] - self.spb_bl[t - 1]))
 
         # Fiscal multiplier effect on output gap
         self.output_gap[t] = self.output_gap_bl[t] - self.fm_effect[t] - 2 / 3 * self.fm_effect[t - 1] - 1 / 3 * self.fm_effect[t - 2]
@@ -830,6 +803,9 @@ class DsaModel:
             # Total SPB for calcualtion of structural deficit
             self.SPB[t] = self.spb[t] / 100 * self.ngdp[t]
 
+            # Calculate expenditure growth
+            self.net_expenditure_growth[t] = self.ng[t] - (self.spb[t] - self.spb[t - 1])/self.expenditure_share * 100
+
     def _project_pb(self):
         """
         Project primary balance adjusted as sum of SPB, cyclical component, and property income component
@@ -837,12 +813,11 @@ class DsaModel:
         for t in range(self.projection_period):
 
             # Calculate components
-            self.output_gap[t] = (self.rgdp[t] / self.rgdp_pot[t] - 1) * 100
             self.cyclical_component[t] = self.budget_balance_elasticity * self.output_gap[t]
-            # self.property_income_component[t] = self.property_income[t] - self.property_income[self.adjustment_start - 1]
+            self.property_income_component[t] = self.property_income[t] - self.property_income[self.adjustment_start - 1]
 
             # Calculate primary balance ratio as sum of components and total primary balance
-            self.pb[t] = self.spb[t] + self.cyclical_component[t] # + self.property_income_component[t]
+            self.pb[t] = self.spb[t] + self.cyclical_component[t] + self.property_income_component[t]
             self.PB[t] = self.pb[t] / 100 * self.ngdp[t]
 
     def _project_debt_ratio(self):
@@ -954,8 +929,10 @@ class DsaModel:
         """
         Calculate overall balance and structural fiscal balance
         """
-        self.ob[t] = (self.PB[t] - self.interest[t]) / self.ngdp[t] * 100
-        self.sb[t] = (self.SPB[t] - self.interest[t]) / self.ngdp[t] * 100
+        self.OB[t] = self.PB[t] - self.interest[t]  # overall balance
+        self.SB[t] = self.SPB[t] - self.interest[t]  # structural balance
+        self.ob[t] = self.OB[t] / self.ngdp[t] * 100 # overall balance as share of NGDP
+        self.sb[t] = self.SB[t] / self.ngdp[t] * 100 # structural balance as share of NGDP
 
     def _calculate_debt_ratio(self, t):
         """
@@ -1252,8 +1229,13 @@ class DsaModel:
         """
         debt_safeguard_decline = 1 if self.d[self.adjustment_start - 1] > 90 else 0.5
 
-        return (self.d[self.edp_end] - self.d[self.adjustment_end]
-                >= debt_safeguard_decline * (self.adjustment_end - self.edp_end))
+        if hasattr(self, 'predefined_adjustment_steps'):
+            debt_safeguard_start = max(self.adjustment_start + len(self.predefined_adjustment_steps) - 1, self.edp_end)
+        else:
+            debt_safeguard_start = self.edp_end
+
+        return (self.d[debt_safeguard_start] - self.d[self.adjustment_end]
+                >= debt_safeguard_decline * (self.adjustment_end - debt_safeguard_start))
 
     def find_spb_deficit_resilience(self):
         """
@@ -1302,62 +1284,6 @@ class DsaModel:
                         edp_steps=self.edp_steps,
                         deficit_resilience_steps=self.deficit_resilience_steps
                     )
-
-    def find_spb_deficit_resilience_post_adjustment(self):
-        """
-        Apply the post-adjustment targets that sets min. annual spb adjustment if structural deficit exceeds 1.5%.
-        """
-        # Set nan deficit steps during adjusmtent period if not defined
-        if not hasattr(self, 'deficit_resilience_steps'):
-            print('No deficit resilience steps defined')
-            self.deficit_resilience_steps = np.full((self.adjustment_period,), np.nan, dtype=np.float64)
-
-        # Define deficit resilience step size
-        if self.adjustment_period <= 4:
-            self.deficit_resilience_step = 0.4
-        else:
-            self.deficit_resilience_step = 0.25    
-
-        # Initialize post_adjustment_steps
-        self.post_adjustment_steps = np.full((self.projection_period - self.adjustment_end - 1,), np.nan, dtype=np.float64)
-
-        # Define post-adjustment target
-        self.post_adjustment_target = -1.5
-
-        # Define post-adjustment step size
-        if self.adjustment_period == 4:
-            self.post_adjustment_step = 0.4
-        elif self.adjustment_period == 7:
-            self.post_adjustment_step = 0.25
-
-        # Project baseline
-        self.project(
-            spb_target=self.spb_target,
-            edp_steps=self.edp_steps,
-            deficit_resilience_steps=self.deficit_resilience_steps
-        )
-
-        # Apply post-adjustment loop
-        self._deficit_resilience_loop_post_adjustment()
-
-        return self.spb_bca[self.adjustment_end]
-
-    def _deficit_resilience_loop_post_adjustment(self):
-        """
-        Loop for post-adjustment period violations of deficit resilience
-        """
-        for t in range(self.adjustment_end + 1, self.adjustment_end + 11):
-            if ((self.d[t] > 60 or self.ob[t] < -3)
-                and self.sb[t] <= self.post_adjustment_target):
-                while (self.sb[t] <= self.post_adjustment_target
-                        and self.post_adjustment_steps[t - self.adjustment_end - 1] < self.deficit_resilience_step - 1e-8):  # 1e-8 tolerance for floating point errors
-                    self.post_adjustment_steps[t - self.adjustment_end - 1] += 0.001
-                    self.project(
-                        spb_target=self.spb_target,
-                        edp_steps=self.edp_steps,
-                        deficit_resilience_steps=self.deficit_resilience_steps,
-                        post_adjustment_steps=self.post_adjustment_steps
-                    )
     
 # ========================================================================================= #
 #                                   AUXILIARY METHODS                                       #
@@ -1382,14 +1308,14 @@ class DsaModel:
                     'pb',  # primary balance
                     'ob',  # overall balance
                     'sb',  # structural balance
-                    'ageing_component',  # ageing component of primary balance
-                    'cyclical_component',  # cyclical component of primary balance
                     'interest_ratio',  # interest payments as share of GDP
                     'ageing_cost',  # ageing cost
                     'rg',  # real GDP growth
                     'rg_pot',  # potential real GDP growth
                     'ng',  # nominal GDP growth
                     'output_gap',  # output gap
+                    'output_gap_bl',  # output gap baseline
+                    'fm_effect', # fiscal mutliplier effect of adjustment on growth 
                     'pi',  # inflation
                     'rgdp_pot',  # potential real GDP
                     'rgdp',  # real GDP

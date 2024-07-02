@@ -52,7 +52,7 @@ class StochasticDsaModel(DsaModel):
                 shock_frequency='quarterly', # start year of stochastic simulation
                 estimation='normal', # estimation method for covariance matrix
                 var_method='cholesky', # method for drawing shocks from VAR model
-                fiscal_multiplier=0.75, 
+                fm=0.75, 
                 growth_policy=False, # Growth policy counterfactual 
                 growth_policy_effect=0, # Effect of growth policy on GDP growth
                 growth_policy_cost=0, # Cost of growth policy
@@ -68,7 +68,7 @@ class StochasticDsaModel(DsaModel):
             adjustment_period, 
             adjustment_start_year, 
             ageing_cost_period, 
-            fiscal_multiplier,
+            fm,
             growth_policy,
             growth_policy_effect,
             growth_policy_cost,
@@ -430,7 +430,8 @@ class StochasticDsaModel(DsaModel):
         bl_var = getattr(self, f'{var}')
 
         # Check if first values of baseline and simulation are equal, if not, simulate
-        if not np.isclose(sim_var[0, 0], bl_var[self.stochastic_start-1]): self.simulate()
+        if not np.isclose(sim_var[0, 0], bl_var[self.stochastic_start-1]): 
+            self.simulate()
 
         # Calculate the percentiles
         self.pcts_dict = {}
@@ -449,13 +450,14 @@ class StochasticDsaModel(DsaModel):
         ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[20], self.pcts_dict[80], color=fanchart_palette[1], label='20th-80th percentile')
         ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[30], self.pcts_dict[70], color=fanchart_palette[2], label='30th-70th percentile')
         ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[40], self.pcts_dict[60], color=fanchart_palette[3], label='40th-60th percentile')
-        ax.plot(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[50], alpha=1, ls='-', color='black', label='median')
+        ax.plot(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[50], alpha=1, ls='-', color='black', label='Median')
         ax.plot(years, bl_var, ls='--', color='red', label='Baseline')
 
         # Plot layout
         ax.legend(loc='best')
         ax.xaxis.grid(False)
-        ax.set_ylabel(var)
+        ylabel = 'Debt (percent of GDP)' if var == 'd' else var
+        ax.set_ylabel(ylabel)
         ax.set_title(f'{self.stochastic_period}-year fanchart for {self.country} (adjustment {self.adjustment_start_year}-{self.adjustment_end_year})')
 
         # Saveplot data in a dataframe if self.save_df is specified
@@ -489,9 +491,6 @@ class StochasticDsaModel(DsaModel):
         if not hasattr(self, 'deficit_resilience_steps'):
            self.deficit_resilience_steps = None
 
-        if not hasattr(self, 'post_adjustment_steps'):
-            self.post_adjustment_steps = None
-
         #if self.country in ['DNK']: bounds = (-6,0) # Denmark's target function has large local minima for high values
         
         self.stochastic_optimization_dict = {}
@@ -506,7 +505,6 @@ class StochasticDsaModel(DsaModel):
         self.project(
             edp_steps=self.edp_steps,
             deficit_resilience_steps=self.deficit_resilience_steps,
-            post_adjustment_steps=self.post_adjustment_steps,
             adjustment_steps=initital_adjustment_steps,
             scenario=None
             )
@@ -519,7 +517,6 @@ class StochasticDsaModel(DsaModel):
             spb_target=self.spb_target, 
             edp_steps=self.edp_steps,
             deficit_resilience_steps=self.deficit_resilience_steps,
-            post_adjustment_steps=self.post_adjustment_steps,
             scenario=None
             )
 
@@ -554,7 +551,6 @@ class StochasticDsaModel(DsaModel):
             spb_target=spb_target, 
             edp_steps=self.edp_steps,
             deficit_resilience_steps=self.deficit_resilience_steps,
-            post_adjustment_steps=self.post_adjustment_steps,
             scenario=None
             )
 
@@ -625,7 +621,6 @@ class StochasticDsaModel(DsaModel):
                          edp=True, 
                          debt_safeguard=True, 
                          deficit_resilience=True,
-                         deficit_resilience_post_adjustment=False,
                          print_results=True,
                          save_df=False):
         """
@@ -651,7 +646,6 @@ class StochasticDsaModel(DsaModel):
             self.edp_end = self.adjustment_start - 1
         if debt_safeguard: self._apply_debt_safeguard()
         if deficit_resilience: self._apply_deficit_resilience()
-        if deficit_resilience_post_adjustment: self._apply_deficit_resilience_post_adjustment()
 
         # Save binding SPB and PB target
         self.spb_target_dict['binding'] = self.spb_bca[self.adjustment_end]
@@ -671,9 +665,7 @@ class StochasticDsaModel(DsaModel):
         if deficit_resilience: 
             self.binding_parameter_dict['deficit_resilience_binding'] = self.deficit_resilience_binding
             self.binding_parameter_dict['deficit_resilience_steps'] = self.deficit_resilience_steps
-        if deficit_resilience_post_adjustment: 
-            self.binding_parameter_dict['deficit_resilience_post_adjustment_binding'] = self.deficit_resilience_post_adjustment_binding
-            self.binding_parameter_dict['post_adjustment_steps'] = self.post_adjustment_steps
+        self.binding_parameter_dict['net_expenditure_growth'] = self.net_expenditure_growth[self.adjustment_start:self.adjustment_end+1]
         
         # Print results
         if print_results: self._print_results_tables(edp, debt_safeguard, deficit_resilience)
@@ -760,10 +752,15 @@ class StochasticDsaModel(DsaModel):
         # Define steps for debt safeguard
         self.edp_steps[:self.edp_period] = self.adjustment_steps[:self.edp_period]
 
+        if hasattr(self, 'predefined_adjustment_steps'):
+            debt_safeguard_start = max(self.adjustment_start + len(self.predefined_adjustment_steps) - 1, self.edp_end)
+        else:
+            debt_safeguard_start = self.edp_end
+
         # Debt safeguard binding for countries with high debt and debt decline below 4 or 2 % for 4 years after edp
         debt_safeguard_decline = 1 if self.d[self.adjustment_start - 1] > 90 else 0.5
-        debt_safeguard_criterion = (self.d[self.edp_end] - self.d[self.adjustment_end] 
-                                    < debt_safeguard_decline * (self.adjustment_end - self.edp_end))
+        debt_safeguard_criterion = (self.d[debt_safeguard_start] - self.d[self.adjustment_end] 
+                                    < debt_safeguard_decline * (self.adjustment_end - debt_safeguard_start))
         
         if (self.d[self.adjustment_start-1] >= 60 
             and debt_safeguard_criterion):
@@ -802,25 +799,7 @@ class StochasticDsaModel(DsaModel):
         else:
             self.deficit_resilience_binding = False
                 
-    def _apply_deficit_resilience_post_adjustment(self):
-        """
-        Apply deficit resilience safeguard for post adjustment period.
-        """
-        # For countries with high deficit or debt, find long term SPB target that brings and keeps deficit below 1.5%
-        if (np.any(self.d[self.adjustment_end+1:] > 60)
-            or np.any(self.ob[self.adjustment_end+1:] < -3)):
-            self.find_spb_deficit_resilience_post_adjustment()
-        
-        # Save results and print update
-        if np.any([~np.isnan(self.post_adjustment_steps)]):
-            self.deficit_resilience_post_adjustment_binding = True
-            self.spb_target_dict['deficit_resilience_post_adjustment'] = self.spb[self.adjustment_end+10]
-            self.pb_target_dict['deficit_resilience_post_adjustment'] = self.pb[self.adjustment_end+10]
-            if self.save_df: self.df_dict['deficit_resilience_post_adjustment'] = self.df(all=True)
-        else:
-            self.deficit_resilience_post_adjustment_binding = False
-
-    def _print_results_tables(self, edp=True, debt_safeguard=True, deficit_resilience=True, deficit_resilience_post_adjustment=False):
+    def _print_results_tables(self, edp=True, debt_safeguard=True, deficit_resilience=True):
         """
         Print two ascii tables side by side and one table underneath, ensuring the lower table is as wide as the top two combined.
         """
@@ -833,7 +812,7 @@ class StochasticDsaModel(DsaModel):
             'stochastic period': f"{self.stochastic_start_year}-{self.stochastic_start_year + self.stochastic_period}",
             'estimation': f"{self.estimation} {'' if self.estimation == 'normal' else '(' + self.var_method + ')'}",
             'bond level data': self.bond_data,
-            'safeguards': f"{'EDP,' if edp else ''} {'debt,' if debt_safeguard else ''} {'deficit_resilience' if deficit_resilience else ''} {'(incl. post-adjustment)' if deficit_resilience_post_adjustment else ''}"
+            'safeguards': f"{'EDP,' if edp else ''} {'debt,' if debt_safeguard else ''} {'deficit_resilience' if deficit_resilience else ''}"
         }
         spb_targets = {key: f"{value:.3f}" for key, value in self.spb_target_dict.items()}
         binding_params = {
@@ -841,7 +820,7 @@ class StochasticDsaModel(DsaModel):
                 np.array2string(value, precision=3, separator=', ').replace('[', '').replace(']', '') if isinstance(value, np.ndarray)
                 else f'{value:.3f}' if isinstance(value, float)
                 else str(value)
-            ) for key, value in self.binding_parameter_dict.items() if key != 'post_adjustment_steps'
+            ) for key, value in self.binding_parameter_dict.items()
         }
 
         # Helper function to split steps into chunks and name them based on ranges
@@ -860,6 +839,9 @@ class StochasticDsaModel(DsaModel):
             if 'deficit_resilience_steps' in self.binding_parameter_dict:
                 del binding_params['deficit_resilience_steps']
                 split_steps('deficit_resilience_steps', self.deficit_resilience_steps)
+            if 'net_expenditure_growth' in self.binding_parameter_dict:
+                del binding_params['net_expenditure_growth']
+                split_steps('net_expenditure_growth', self.net_expenditure_growth[self.adjustment_start:self.adjustment_end+1])
 
         # Convert all values to string with proper formatting
         formatted_model_params = {key: str(value) for key, value in model_params.items()}

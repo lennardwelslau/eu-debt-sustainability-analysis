@@ -84,7 +84,6 @@ def _calc_annex_charts(results_dict):
             binding_parameter_dict = results_dict[country][adjustment_period]['binding_parameter_dict']
             binding_spb_target = binding_parameter_dict['spb_target']
             binding_adjustment_steps = binding_parameter_dict['adjustment_steps']
-            # binding_post_adjustment = binding_parameter_dict['post_adjustment_steps']
 
             # Create df for chart a)
             df_interest_ageing_growth = df[['y','ageing_cost', 'ng', 'iir']].rename(columns={'y': 'year', 'iir': 'Implicit interest rate', 'ng': 'Nominal GDP growth', 'ageing_cost':'Ageing costs'})

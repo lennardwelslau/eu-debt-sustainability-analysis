@@ -86,7 +86,6 @@ def run_dsa(
                     edp=edp, 
                     debt_safeguard=debt_safeguard, 
                     deficit_resilience=deficit_resilience,
-                    deficit_resilience_post_adjustment=False
                     )
                 results_dict[country][adjustment_period]['spb_target_dict'] = dsa.spb_target_dict
                 results_dict[country][adjustment_period]['df_dict'] = dsa.df_dict
@@ -136,7 +135,6 @@ def run_inv_scenario(
             dsa.find_spb_binding(edp=False, 
                                  debt_safeguard=False, 
                                  deficit_resilience=False,
-                                 deficit_resilience_post_adjustment=False,
                                  print_results=False)
 
             # if dsa.spb_binding < spb_binding baseline, increase by 0.5 
@@ -162,6 +160,7 @@ def run_consecutive_dsa(
         initial_adjustment_period=7, 
         consecutive_adjustment_period=4, 
         number_of_adjustment_periods=3, 
+        print_results=False,
         plot_results=False):
     """
     Performs DSA for consecutive adjustment periods and returns results in a DataFrame.
@@ -171,11 +170,11 @@ def run_consecutive_dsa(
         adjustment_period = initial_adjustment_period + consecutive_adjustment_period * i
         dsa = StochasticDsaModel(country=country, adjustment_period=adjustment_period)
         if i == 0:
-            dsa.find_spb_binding()
+            dsa.find_spb_binding(print_results=print_results)
             adjustment_steps = dsa.adjustment_steps
         else:
             dsa.predefined_adjustment_steps = np.concatenate([adjustment_steps, np.nan * np.ones(consecutive_adjustment_period)])
-            dsa.find_spb_binding(deficit_resilience=False, deficit_resilience_post_adjustment=False)
+            dsa.find_spb_binding(print_results=print_results)
             adjustment_steps = np.concatenate([adjustment_steps, dsa.adjustment_steps[len(adjustment_steps):]])
         results[f'adjustment_period_{i+1}'] = dsa.spb_target_dict
 
