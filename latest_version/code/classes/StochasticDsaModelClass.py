@@ -51,12 +51,8 @@ class StochasticDsaModel(DsaModel):
                 stochastic_period=5, # number of years for stochastic projection
                 shock_frequency='quarterly', # start year of stochastic simulation
                 estimation='normal', # estimation method for covariance matrix
-                var_method='cholesky', # method for drawing shocks from VAR model
-                fm=0.75, 
-                growth_policy=False, # Growth policy counterfactual 
-                growth_policy_effect=0, # Effect of growth policy on GDP growth
-                growth_policy_cost=0, # Cost of growth policy
-                growth_policy_period=1, # Period of growth policy counterfactual
+                estimation_method='cholesky', # method for drawing shocks from VAR model
+                fiscal_multiplier=0.75, 
                 bond_data=False, # Use bond level data for repayment profile
                 ): 
         
@@ -68,11 +64,7 @@ class StochasticDsaModel(DsaModel):
             adjustment_period, 
             adjustment_start_year, 
             ageing_cost_period, 
-            fm,
-            growth_policy,
-            growth_policy_effect,
-            growth_policy_cost,
-            growth_policy_period,
+            fiscal_multiplier,
             bond_data
             )
         
@@ -80,7 +72,7 @@ class StochasticDsaModel(DsaModel):
         self.shock_frequency = shock_frequency
         self.shock_sample_start = shock_sample_start
         self.estimation = estimation
-        self.var_method = var_method
+        self.estimation_method = estimation_method
         if stochastic_start_year is None: 
             stochastic_start_year = adjustment_start_year + adjustment_period
         self.stochastic_start_year = stochastic_start_year
@@ -107,7 +99,7 @@ class StochasticDsaModel(DsaModel):
 
             # If quarterly shock data is not available, set parameters to annual
             if self.df_shocks.empty: 
-                print(f'No quarterly shock data available for {self.country}, using annual data instead.')
+                # print(f'No quarterly shock data available for {self.country}, using annual data instead.')
                 self.shock_frequency = 'annual'
                 self.draw_period = self.stochastic_period
         
@@ -205,9 +197,9 @@ class StochasticDsaModel(DsaModel):
         residuals = self.var.resid.values
 
         # Use bootstrap sampling from the residuals or Cholesky decomposition of the covariance matrix
-        if self.var_method == 'bootstrap':
+        if self.estimation_method == 'bootstrap':
             residual_draws = residuals[np.random.choice(len(residuals), size=(self.N, self.draw_period), replace=True)]
-        if self.var_method == 'cholesky':
+        if self.estimation_method == 'cholesky':
             cov_matrix = np.cov(residuals.T)
             chol_matrix = np.linalg.cholesky(cov_matrix)
             residual_draws = np.random.randn(self.N, self.draw_period, residuals.shape[1]) @ chol_matrix.T
@@ -478,7 +470,7 @@ class StochasticDsaModel(DsaModel):
 #                              STOCHASTIC OPTIMIZATION METHODS                              # 
 # ========================================================================================= #
 
-    def find_spb_stochastic(self, prob_target=0.3, bounds=(-6, 6), print_update=False):
+    def find_spb_stochastic(self, prob_target=0.3, bounds=(-10, 10), print_update=False):
         """
         Find the structural primary balance that ensures the probability of the debt-to-GDP ratio exploding is equal to prob_target.
         """
@@ -491,21 +483,25 @@ class StochasticDsaModel(DsaModel):
         if not hasattr(self, 'deficit_resilience_steps'):
            self.deficit_resilience_steps = None
 
+        if not hasattr(self, 'post_spb_steps'):
+            self.post_spb_steps = None
+
         #if self.country in ['DNK']: bounds = (-6,0) # Denmark's target function has large local minima for high values
         
         self.stochastic_optimization_dict = {}
 
         # Set initial adjustment steps if predefined, this is needed for optimization of only selected steps
-        if hasattr(self, 'predefined_adjustment_steps'):
-            initital_adjustment_steps = np.nan_to_num(self.predefined_adjustment_steps)
+        if hasattr(self, 'predefined_spb_steps'):
+            initital_spb_steps = np.nan_to_num(self.predefined_spb_steps)
         else:
-            initital_adjustment_steps = None
+            initital_spb_steps = None
 
         # Initial projection
         self.project(
             edp_steps=self.edp_steps,
             deficit_resilience_steps=self.deficit_resilience_steps,
-            adjustment_steps=initital_adjustment_steps,
+            post_spb_steps=self.post_spb_steps,
+            spb_steps=initital_spb_steps,
             scenario=None
             )
         
@@ -517,6 +513,7 @@ class StochasticDsaModel(DsaModel):
             spb_target=self.spb_target, 
             edp_steps=self.edp_steps,
             deficit_resilience_steps=self.deficit_resilience_steps,
+            post_spb_steps=self.post_spb_steps,
             scenario=None
             )
 
@@ -551,6 +548,7 @@ class StochasticDsaModel(DsaModel):
             spb_target=spb_target, 
             edp_steps=self.edp_steps,
             deficit_resilience_steps=self.deficit_resilience_steps,
+            post_spb_steps=self.post_spb_steps,
             scenario=None
             )
 
@@ -652,7 +650,7 @@ class StochasticDsaModel(DsaModel):
         self.pb_target_dict['binding'] = self.pb[self.adjustment_end]
 
         # Save binding parameters to reproduce adjustment path
-        self.binding_parameter_dict['adjustment_steps'] = self.adjustment_steps
+        self.binding_parameter_dict['spb_steps'] = self.spb_steps
         self.binding_parameter_dict['spb_target'] = self.binding_spb_target
         self.binding_parameter_dict['criterion'] = self.binding_criterion
 
@@ -733,7 +731,7 @@ class StochasticDsaModel(DsaModel):
         """
         # Check if EDP binding, run DSA for periods after EDP and project new path under baseline assumptions
         self.find_edp(spb_target=self.binding_spb_target)
-        if not np.all([np.isnan(self.edp_steps)]) and np.any([self.edp_steps >= self.adjustment_steps - 1e-8]):
+        if not np.all([np.isnan(self.edp_steps)]) and np.any([self.edp_steps >= self.spb_steps - 1e-8]):
             self.edp_binding = True 
             self._run_dsa(criterion=self.binding_criterion)
             self.project(
@@ -750,10 +748,10 @@ class StochasticDsaModel(DsaModel):
         Check if Council version of debt safeguard is binding in binding scenario and apply if it is.
         """
         # Define steps for debt safeguard
-        self.edp_steps[:self.edp_period] = self.adjustment_steps[:self.edp_period]
+        self.edp_steps[:self.edp_period] = self.spb_steps[:self.edp_period]
 
-        if hasattr(self, 'predefined_adjustment_steps'):
-            debt_safeguard_start = max(self.adjustment_start + len(self.predefined_adjustment_steps) - 1, self.edp_end)
+        if hasattr(self, 'predefined_spb_steps'):
+            debt_safeguard_start = max(self.adjustment_start + len(self.predefined_spb_steps) - 1, self.edp_end)
         else:
             debt_safeguard_start = self.edp_end
 
@@ -810,7 +808,7 @@ class StochasticDsaModel(DsaModel):
             'adjustment start': self.adjustment_start_year,
             'shock frequency': self.shock_frequency,
             'stochastic period': f"{self.stochastic_start_year}-{self.stochastic_start_year + self.stochastic_period}",
-            'estimation': f"{self.estimation} {'' if self.estimation == 'normal' else '(' + self.var_method + ')'}",
+            'estimation': f"{self.estimation} {'' if self.estimation == 'normal' else '(' + self.estimation_method + ')'}",
             'bond level data': self.bond_data,
             'safeguards': f"{'EDP,' if edp else ''} {'debt,' if debt_safeguard else ''} {'deficit_resilience' if deficit_resilience else ''}"
         }
@@ -820,7 +818,7 @@ class StochasticDsaModel(DsaModel):
                 np.array2string(value, precision=3, separator=', ').replace('[', '').replace(']', '') if isinstance(value, np.ndarray)
                 else f'{value:.3f}' if isinstance(value, float)
                 else str(value)
-            ) for key, value in self.binding_parameter_dict.items()
+            ) for key, value in self.binding_parameter_dict.items() if key != 'post_spb_steps'
         }
 
         # Helper function to split steps into chunks and name them based on ranges
@@ -831,8 +829,8 @@ class StochasticDsaModel(DsaModel):
 
         # Check for adjustment period and split steps if necessary
         if self.adjustment_period > 7:
-            del binding_params['adjustment_steps']
-            split_steps('adjustment_steps', self.adjustment_steps)
+            del binding_params['spb_steps']
+            split_steps('spb_steps', self.spb_steps)
             if 'edp_steps' in self.binding_parameter_dict:
                 del binding_params['edp_steps']
                 split_steps('edp_steps', self.edp_steps)

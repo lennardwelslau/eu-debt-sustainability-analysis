@@ -30,12 +30,8 @@ def run_dsa(
         stochastic_period=5, # number of years for stochastic projection
         shock_frequency='quarterly', # frequency of shocks, 'quarterly' or 'annual'
         estimation='normal', # estimation method for covariance matrix, 'normal' or 'var'
-        var_method='cholesky', # method for drawing shocks if estimation is 'var', 'cholesky' or 'bootstrap'
+        estimation_method='cholesky', # method for drawing shocks if estimation is 'var', 'cholesky' or 'bootstrap'
         fiscal_multiplier=0.75, # size of the fiscal multiplier
-        growth_policy=False, # Growth policy counterfactual 
-        growth_policy_effect=0, # Total effect of growth policy on GDP growth
-        growth_policy_cost=0, # Total cost of growth policy as percent of GDP
-        growth_policy_period=1, # Period of growth policy counterfactual
         bond_data=False, # Use bond level data for repayment profile,
         ):
     """
@@ -64,12 +60,8 @@ def run_dsa(
                 stochastic_period=stochastic_period, # number of years for stochastic projection
                 shock_frequency=shock_frequency, # frequency of shocks, 'quarterly' or 'annual'
                 estimation=estimation, # estimation method for covariance matrix, 'normal' or 'var'
-                var_method=var_method, # method for drawing shocks if estimation is 'var', 'cholesky' or 'bootstrap'
+                estimation_method=estimation_method, # method for drawing shocks if estimation is 'var', 'cholesky' or 'bootstrap'
                 fiscal_multiplier=fiscal_multiplier, # size of the fiscal multiplier
-                growth_policy=growth_policy, # Growth policy counterfactual 
-                growth_policy_effect=growth_policy_effect, # Total effect of growth policy on GDP growth
-                growth_policy_cost=growth_policy_cost, # Total cost of growth policy as percent of GDP
-                growth_policy_period=growth_policy_period, # Period of growth policy counterfactual
                 bond_data=bond_data, # Use bond level data for repayment profile
                 )
             
@@ -112,14 +104,14 @@ def run_inv_scenario(
         for adjustment_period in adjustment_periods:
 
             # Load baseline adjustment steps
-            adjustment_steps = np.copy(results_dict[country][adjustment_period]['binding_parameter_dict']['adjustment_steps'])
+            spb_steps = np.copy(results_dict[country][adjustment_period]['binding_parameter_dict']['spb_steps'])
 
             # First adjustment step is lowered by size of investment shock
             investment_shock = 0.5
-            adjustment_steps[0] -= investment_shock
+            spb_steps[0] -= investment_shock
 
             # Final adjustmnt step is set to nan because we will reoptimize
-            adjustment_steps[-1] = np.nan
+            spb_steps[-1] = np.nan
 
             # Create new instance of DSA model
             dsa = StochasticDsaModel(
@@ -129,7 +121,7 @@ def run_inv_scenario(
                 )
             
             # Set predefined adjustment steps
-            dsa.predefined_adjustment_steps = adjustment_steps
+            dsa.predefined_spb_steps = spb_steps
 
             # Find binding spb, without safeguards since those are already included in the adjustment steps
             dsa.find_spb_binding(edp=False, 
@@ -139,8 +131,8 @@ def run_inv_scenario(
 
             # if dsa.spb_binding < spb_binding baseline, increase by 0.5 
             if dsa.spb_target < results_dict[country][adjustment_period]['binding_parameter_dict']['spb_target']:
-                dsa.adjustment_steps[-1] += investment_shock
-                dsa.project(adjustment_steps=dsa.adjustment_steps)
+                dsa.spb_steps[-1] += investment_shock
+                dsa.project(spb_steps=dsa.spb_steps)
             
             # if binding debt_safeguard, simply use old adjustment steps
             if results_dict[country][adjustment_period]['binding_parameter_dict']['criterion'] == 'debt_safeguard':
@@ -171,11 +163,11 @@ def run_consecutive_dsa(
         dsa = StochasticDsaModel(country=country, adjustment_period=adjustment_period)
         if i == 0:
             dsa.find_spb_binding(print_results=print_results)
-            adjustment_steps = dsa.adjustment_steps
+            spb_steps = dsa.spb_steps
         else:
-            dsa.predefined_adjustment_steps = np.concatenate([adjustment_steps, np.nan * np.ones(consecutive_adjustment_period)])
+            dsa.predefined_spb_steps = np.concatenate([spb_steps, np.nan * np.ones(consecutive_adjustment_period)])
             dsa.find_spb_binding(print_results=print_results)
-            adjustment_steps = np.concatenate([adjustment_steps, dsa.adjustment_steps[len(adjustment_steps):]])
+            spb_steps = np.concatenate([spb_steps, dsa.spb_steps[len(spb_steps):]])
         results[f'adjustment_period_{i+1}'] = dsa.spb_target_dict
 
     results_df = pd.DataFrame(results).T

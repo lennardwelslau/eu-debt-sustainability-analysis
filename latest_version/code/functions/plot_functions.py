@@ -83,7 +83,7 @@ def _calc_annex_charts(results_dict):
             # Set adjustment path parameters to binding path
             binding_parameter_dict = results_dict[country][adjustment_period]['binding_parameter_dict']
             binding_spb_target = binding_parameter_dict['spb_target']
-            binding_adjustment_steps = binding_parameter_dict['adjustment_steps']
+            binding_spb_steps = binding_parameter_dict['spb_steps']
 
             # Create df for chart a)
             df_interest_ageing_growth = df[['y','ageing_cost', 'ng', 'iir']].rename(columns={'y': 'year', 'iir': 'Implicit interest rate', 'ng': 'Nominal GDP growth', 'ageing_cost':'Ageing costs'})
@@ -99,7 +99,7 @@ def _calc_annex_charts(results_dict):
             try:
                 dsa = StochasticDsaModel(country=country, adjustment_period=adjustment_period)
                 dsa.project(
-                    adjustment_steps=binding_adjustment_steps, 
+                    spb_steps=binding_spb_steps, 
                     )            
                 dsa.simulate()
                 dsa.fanchart(show=False)
