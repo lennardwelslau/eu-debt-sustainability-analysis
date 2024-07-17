@@ -54,7 +54,7 @@ class StochasticDsaModel(DsaModel):
                 estimation_method='cholesky', # method for drawing shocks from VAR model
                 fiscal_multiplier=0.75, 
                 fiscal_multiplier_persistence=3,
-                fiscal_multiplier_type='commission',
+                fiscal_multiplier_type='com',
                 bond_data=False, # Use bond level data for repayment profile
                 ): 
         

@@ -52,7 +52,7 @@ class DsaModel:
             ageing_cost_period=10,  # number of years for ageing cost adjustment after adjustment period
             fiscal_multiplier=0.75, # fiscal multiplier for fiscal adjustment
             fiscal_multiplier_persistence=3, # persistence of fiscal multiplier in years
-            fiscal_multiplier_type='commission', # type of fiscal multiplier, commission or bruegel version 
+            fiscal_multiplier_type='com', # type of fiscal multiplier, commission or bruegel version 
             bond_data=False, # Use bond level data for repayment profile
         ):
 
@@ -647,10 +647,10 @@ class DsaModel:
         """
         Project nominal GDP.
         """
-        assert self.fiscal_multiplier_type in ['bruegel', 'commission'], 'Fiscal multiplier type not recognized'
+        assert self.fiscal_multiplier_type in ['bruegel', 'com'], 'Fiscal multiplier type not recognized'
         for t in range(1, self.projection_period):
             if self.fiscal_multiplier_type == 'bruegel': self._calculate_rgdp_bruegel(t)
-            elif self.fiscal_multiplier_type == 'commission': self._calculate_rgdp_com(t)
+            elif self.fiscal_multiplier_type == 'com': self._calculate_rgdp_com(t)
             self._calculate_ngdp(t)
         
     def _calculate_rgdp_bruegel(self, t):
