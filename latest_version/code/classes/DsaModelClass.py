@@ -51,6 +51,8 @@ class DsaModel:
             adjustment_start_year=2025,  # start year of linear spb_bca adjustment
             ageing_cost_period=10,  # number of years for ageing cost adjustment after adjustment period
             fiscal_multiplier=0.75, # fiscal multiplier for fiscal adjustment
+            fiscal_multiplier_persistence=3, # persistence of fiscal multiplier in years
+            fiscal_multiplier_type='commission', # type of fiscal multiplier, commission or bruegel version 
             bond_data=False, # Use bond level data for repayment profile
         ):
 
@@ -66,6 +68,8 @@ class DsaModel:
         self.adjustment_end = self.adjustment_start_year + adjustment_period - start_year - 1  # end (T+x) of adjustment period
         self.ageing_cost_period = ageing_cost_period # number of years during which ageing costs have to be accounted for by spb adjustment
         self.fiscal_multiplier = fiscal_multiplier # fiscal multiplier for fiscal adjustment
+        self.fiscal_multiplier_persistence = fiscal_multiplier_persistence # persistence of fiscal multiplier
+        self.fiscal_multiplier_type = fiscal_multiplier_type # type of fiscal multiplier
         self.bond_data = bond_data # True if bond level data is used for repayment profile
 
         # Initialize model variables related to GDP, growth, inflation
@@ -643,20 +647,46 @@ class DsaModel:
         """
         Project nominal GDP.
         """
+        assert self.fiscal_multiplier_type in ['bruegel', 'commission'], 'Fiscal multiplier type not recognized'
         for t in range(1, self.projection_period):
-            self._calculate_rgdp(t)
+            if self.fiscal_multiplier_type == 'bruegel': self._calculate_rgdp_bruegel(t)
+            elif self.fiscal_multiplier_type == 'commission': self._calculate_rgdp_com(t)
             self._calculate_ngdp(t)
-
-    def _calculate_rgdp(self, t):
+        
+    def _calculate_rgdp_bruegel(self, t):
         """
         Calcualtes real GDP and real growth, assumes persistence in fiscal_multiplier effect leading to output gap closing in 3 years
         """
         # Fiscal multiplier effect from change in SPB relative to baseline
         self.fiscal_multiplier_effect[t] = self.fiscal_multiplier * ((self.spb_bca[t] - self.spb_bca[t - 1]) - (self.spb_bl[t] - self.spb_bl[t - 1]))
 
-        # Fiscal multiplier effect on output gap
-        self.output_gap[t] = self.output_gap_bl[t] - self.fiscal_multiplier_effect[t] - 2 / 3 * self.fiscal_multiplier_effect[t - 1] - 1 / 3 * self.fiscal_multiplier_effect[t - 2]
+        # Calculate persistence term of multiplier effect
+        persistence_term = sum([self.fiscal_multiplier_effect[t - i] * (self.fiscal_multiplier_persistence - i) / self.fiscal_multiplier_persistence for i in range(1, self.fiscal_multiplier_persistence)])
 
+        # Fiscal multiplier effect on output gap
+        self.output_gap[t] = self.output_gap_bl[t] - self.fiscal_multiplier_effect[t] - persistence_term
+
+        # Real growth and real GDP
+        self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
+        self.rg[t] = (self.rgdp[t] - self.rgdp[t - 1]) / self.rgdp[t - 1] * 100
+
+    def _calculate_rgdp_com(self, t):
+        """
+        Calcualtes real GDP and real growth, assumes output gap closes in 3 years with 2/3 and 1/3 rule
+        """
+        # Fiscal multiplier effect from change in SPB relative to baseline
+        self.fiscal_multiplier_effect[t] = self.fiscal_multiplier * ((self.spb_bca[t] - self.spb_bca[t - 1]) - (self.spb_bl[t] - self.spb_bl[t - 1]))
+
+        # Output gap
+        if t == self.adjustment_start: 
+            self.output_gap[t] = self.output_gap_bl[t] - self.fiscal_multiplier_effect[t]
+
+        elif t in range(self.adjustment_start + 1, self.adjustment_end + 1 ) and self.policy_change:
+            self.output_gap[t] = (self.fiscal_multiplier_persistence - 1) / self.fiscal_multiplier_persistence * self.output_gap[t-1] - self.fiscal_multiplier_effect[t]
+        
+        elif t in range(self.adjustment_end + 1, self.adjustment_end + self.fiscal_multiplier_persistence + 1) and self.policy_change:
+            self.output_gap[t] = self.output_gap[t-1] - 1 / self.fiscal_multiplier_persistence * self.output_gap[self.adjustment_end]
+                
         # Real growth and real GDP
         self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
         self.rg[t] = (self.rgdp[t] - self.rgdp[t - 1]) / self.rgdp[t - 1] * 100

@@ -53,6 +53,8 @@ class StochasticDsaModel(DsaModel):
                 estimation='normal', # estimation method for covariance matrix
                 estimation_method='cholesky', # method for drawing shocks from VAR model
                 fiscal_multiplier=0.75, 
+                fiscal_multiplier_persistence=3,
+                fiscal_multiplier_type='commission',
                 bond_data=False, # Use bond level data for repayment profile
                 ): 
         
@@ -65,6 +67,8 @@ class StochasticDsaModel(DsaModel):
             adjustment_start_year, 
             ageing_cost_period, 
             fiscal_multiplier,
+            fiscal_multiplier_persistence,
+            fiscal_multiplier_type,
             bond_data
             )
         
