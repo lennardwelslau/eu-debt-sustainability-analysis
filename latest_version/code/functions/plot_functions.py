@@ -1,4 +1,6 @@
 # Import libraries and modules
+import os
+base_dir = '../' * (os.getcwd().split(os.sep)[::-1].index('code')+1)
 import numpy as np
 import pandas as pd
 pd.options.display.float_format = "{:,.3f}".format
@@ -201,8 +203,8 @@ def _create_annex_charts(annex_chart_dict, folder_name, save_svg=False, save_png
         fig.subplots_adjust(top=0.92)
 
         # Export charts
-        if save_svg == True: plt.savefig(f'../output/{folder_name}/charts/{get_country_name(country)}.svg', format='svg', bbox_inches='tight')
-        if save_png == True: plt.savefig(f'../output/{folder_name}/charts/{get_country_name(country)}.png', dpi=300, bbox_inches='tight')
+        if save_svg == True: plt.savefig(f'{base_dir}output/{folder_name}/charts/{get_country_name(country)}.svg', format='svg', bbox_inches='tight')
+        if save_png == True: plt.savefig(f'{base_dir}output/{folder_name}/charts/{get_country_name(country)}.png', dpi=300, bbox_inches='tight')
 
 def plot_inv(country_codes, results_dict, folder_name, nrows=4, ncols=3, save_svg=False, save_png=True):
     """
@@ -281,5 +283,5 @@ def plot_inv(country_codes, results_dict, folder_name, nrows=4, ncols=3, save_sv
             
     plt.tight_layout(rect=[0, 0, 1, 0.96])
 
-    if save_png == True: plt.savefig(f'../output/{folder_name}/charts/inv_all.png', dpi=300, bbox_inches='tight')
-    if save_svg == True: plt.savefig(f'../output/{folder_name}/charts/inv_all.svg', format='svg', bbox_inches='tight')
+    if save_png == True: plt.savefig(f'{base_dir}output/{folder_name}/charts/inv_all.png', dpi=300, bbox_inches='tight')
+    if save_svg == True: plt.savefig(f'{base_dir}output/{folder_name}/charts/inv_all.svg', format='svg', bbox_inches='tight')

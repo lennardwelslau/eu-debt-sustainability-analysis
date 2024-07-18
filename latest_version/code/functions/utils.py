@@ -1,5 +1,6 @@
 # Import libraries and modules
 import os
+base_dir = '../' * (os.getcwd().split(os.sep)[::-1].index('code')+1)
 import numpy as np
 import pandas as pd
 pd.options.display.float_format = "{:,.3f}".format
@@ -23,7 +24,7 @@ def add_output_folder(folder_name):
     Create output folder and results dictionary for analysis.
     If folder already exists, load results dictionary.
     """
-    output_path = f'../output/{folder_name}'
+    output_path = f'{base_dir}output/{folder_name}'
     results_charts_path = f'{output_path}/charts'
     if not os.path.exists(output_path):
         os.makedirs(output_path)
@@ -33,7 +34,7 @@ def load_results_dict(folder_name):
     """
     Load results dictionary from output folder.
     """ 
-    return pd.read_pickle(f'../output/{folder_name}/results_dict.pkl')
+    return pd.read_pickle(f'{base_dir}output/{folder_name}/results_dict.pkl')
 
 def save_results(
         results_dict,
@@ -128,13 +129,13 @@ def _save_spb_table(results_dict, folder_name):
     df_spb = df_spb[col_order].sort_values(['adjustment_period', 'country']).round(3)
 
     # Save to excel
-    df_spb.to_excel(f'../output/{folder_name}/results_spb.xlsx', index=False)
+    df_spb.to_excel(f'{base_dir}output/{folder_name}/results_spb.xlsx', index=False)
 
 def _save_dfs(results_dict, folder_name):
     """
     Saves dfs for each country, adjustment period and scenario in dsa_dict.
     """
-    with pd.ExcelWriter(f'../output/{folder_name}/results_timeseries.xlsx') as writer:
+    with pd.ExcelWriter(f'{base_dir}output/{folder_name}/results_timeseries.xlsx') as writer:
         for country in results_dict.keys():
             for adjustment_period in results_dict[country].keys():
                 df_dict = results_dict[country][adjustment_period]['df_dict']

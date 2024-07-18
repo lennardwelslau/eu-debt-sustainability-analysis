@@ -1,5 +1,6 @@
 # Import libraries and modules
 import os
+base_dir = '../' * (os.getcwd().split(os.sep)[::-1].index('code')+1)
 import numpy as np
 import pandas as pd
 pd.options.display.float_format = "{:,.3f}".format
@@ -86,7 +87,7 @@ def run_dsa(
             dsa.project()
             results_dict[country][adjustment_period]['df_dict']['no_policy_change'] = dsa.df(all=True)
 
-    with open(f'../output/{folder_name}/results_dict.pkl', 'wb') as f:
+    with open(f'{base_dir}output/{folder_name}/results_dict.pkl', 'wb') as f:
         pickle.dump(results_dict, f)
     print('DSA run completed and saved.')
 
@@ -143,7 +144,7 @@ def run_inv_scenario(
             results_dict[country][adjustment_period]['df_dict']['inv'] = dsa.df(all=True)
 
     # Save results dict    
-    with open(f'../output/{folder_name}/results_dict.pkl', 'wb') as f:
+    with open(f'{base_dir}output/{folder_name}/results_dict.pkl', 'wb') as f:
         pickle.dump(results_dict, f)
 
 def run_consecutive_dsa(

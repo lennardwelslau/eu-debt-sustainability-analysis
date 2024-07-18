@@ -34,6 +34,7 @@ from statsmodels.tsa.api import VAR
 from numba import jit
 from classes import DsaModel
 
+
 class StochasticDsaModel(DsaModel):
 
 # ========================================================================================= #
@@ -97,7 +98,7 @@ class StochasticDsaModel(DsaModel):
         """
         # Read country shock data and get number of variables for quarterly data
         if self.shock_frequency == 'quarterly':
-            self.df_shocks = pd.read_csv('../data/InputData/stochastic_data_quarterly.csv').set_index('YEAR')
+            self.df_shocks = pd.read_csv(self._base_dir + 'data/InputData/stochastic_data_quarterly.csv').set_index('YEAR')
             self.df_shocks = self.df_shocks.loc[self.df_shocks['COUNTRY'] == self.country]
             self.df_shocks.index = pd.PeriodIndex(self.df_shocks.index, freq='Q')
 
@@ -109,7 +110,7 @@ class StochasticDsaModel(DsaModel):
         
         # Read country shock data for annual data        
         if self.shock_frequency == 'annual':
-            self.df_shocks = pd.read_csv('../data/InputData/stochastic_data_annual.csv').set_index('YEAR')
+            self.df_shocks = pd.read_csv(self._base_dir + 'data/InputData/stochastic_data_annual.csv').set_index('YEAR')
             self.df_shocks = self.df_shocks.loc[self.df_shocks['COUNTRY'] == self.country]
             self.df_shocks.index = pd.PeriodIndex(self.df_shocks.index, freq='A')
 

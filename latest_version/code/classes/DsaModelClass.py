@@ -25,6 +25,7 @@
 # ========================================================================================= #
 
 # Import libraries and modules
+import os
 import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -152,9 +153,7 @@ class DsaModel:
         """
         Import data from CSV deterministic input data file.
         """
-        self.df_deterministic_data = pd.read_csv('../data/InputData/deterministic_data.csv')
-        self.df_deterministic_data = self.df_deterministic_data.loc[self.df_deterministic_data['COUNTRY'] == self.country].set_index('YEAR').iloc[:,1:]
-
+        self._load_input_data()
         self._clean_rgdp_pot()
         self._clean_rgdp()
         self._calculate_output_gap()
@@ -172,6 +171,15 @@ class DsaModel:
         self._clean_ageing_cost()
         self._clean_pension_revenue()
         self._clean_property_income()
+    
+    def _load_input_data(self):
+        """
+        Load deterministic data from CSV file.
+        """
+        # Set base directory relative to code folder
+        self._base_dir = '../' * (os.getcwd().split(os.sep)[::-1].index('code')+1)
+        self.df_deterministic_data = pd.read_csv(self._base_dir + 'data/InputData/deterministic_data.csv') 
+        self.df_deterministic_data = self.df_deterministic_data.loc[self.df_deterministic_data['COUNTRY'] == self.country].set_index('YEAR').iloc[:,1:]
 
     def _clean_rgdp_pot(self):
         """
@@ -335,9 +343,13 @@ class DsaModel:
         for t, y in enumerate(range(self.start_year, self.end_year + 1)):
             if t <= 2:
                 self.spb_bl[t] = self.df_deterministic_data.loc[y, 'STRUCTURAL_PRIMARY_BALANCE']
+                self.SPB[t] = self.spb_bl[t] / 100 * self.ngdp_bl[t]
                 self.pb[t] = self.df_deterministic_data.loc[y, 'PRIMARY_BALANCE']
+                self.PB[t] = self.pb[t] / 100 * self.ngdp_bl[t]
                 self.ob[t] = self.df_deterministic_data.loc[y, 'FISCAL_BALANCE']
+                self.OB[t] = self.ob[t] / 100 * self.ngdp_bl[t]
                 self.sb[t] = self.spb_bl[t] + (self.ob[t] * self.ngdp_bl[t] - self.pb[t] * self.ngdp_bl[t]) / self.ngdp_bl[t]
+                self.SB[t] = self.sb[t] / 100 * self.ngdp_bl[t]
             else:
                 self.spb_bl[t] = self.spb_bl[t - 1]
                 self.pb[t] = self.pb[t - 1]
@@ -649,10 +661,12 @@ class DsaModel:
         """
         assert self.fiscal_multiplier_type in ['bruegel', 'com'], 'Fiscal multiplier type not recognized'
         for t in range(1, self.projection_period):
-            if self.fiscal_multiplier_type == 'bruegel': self._calculate_rgdp_bruegel(t)
-            elif self.fiscal_multiplier_type == 'com': self._calculate_rgdp_com(t)
+            if self.fiscal_multiplier_type == 'bruegel':
+                self._calculate_rgdp_bruegel(t)
+            elif self.fiscal_multiplier_type == 'com': 
+                self._calculate_rgdp_com(t)
             self._calculate_ngdp(t)
-        
+
     def _calculate_rgdp_bruegel(self, t):
         """
         Calcualtes real GDP and real growth, assumes persistence in fiscal_multiplier effect leading to output gap closing in 3 years
@@ -682,7 +696,8 @@ class DsaModel:
             self.output_gap[t] = self.output_gap_bl[t] - self.fiscal_multiplier_effect[t]
 
         elif t in range(self.adjustment_start + 1, self.adjustment_end + 1 ) and self.policy_change:
-            self.output_gap[t] = (self.fiscal_multiplier_persistence - 1) / self.fiscal_multiplier_persistence * self.output_gap[t-1] - self.fiscal_multiplier_effect[t]
+            # self.output_gap[t] = (self.fiscal_multiplier_persistence - 1) / self.fiscal_multiplier_persistence * self.output_gap[t-1] - self.fiscal_multiplier_effect[t]
+            self.output_gap[t] = 2 / 3 * self.output_gap[t-1] - self.fiscal_multiplier_effect[t]
         
         elif t in range(self.adjustment_end + 1, self.adjustment_end + self.fiscal_multiplier_persistence + 1) and self.policy_change:
             self.output_gap[t] = self.output_gap[t-1] - 1 / self.fiscal_multiplier_persistence * self.output_gap[self.adjustment_end]
@@ -825,8 +840,9 @@ class DsaModel:
             self._calculate_repayment(t)
             self._calculate_gfn(t)
             self._calculate_debt_stock(t)
-            self._calculate_balance(t)
-            self._calculate_debt_ratio(t)
+            if t >= self.adjustment_start: # We keep input data for 2024
+                self._calculate_balance(t)
+                self._calculate_debt_ratio(t)
 
     def _apply_financial_stress(self, t):
         """
