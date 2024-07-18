@@ -58,89 +58,98 @@ class DsaModel:
         ):
 
         # Initialize model parameters
-        self.country = country # country ISO code
-        self.start_year = start_year # start year of projection (T), normally this is the last year of non-forecast observations
-        self.end_year = end_year # end year of projection (T+30)
-        self.projection_period = self.end_year - start_year + 1 # number of years in projection
-        self.adjustment_period = adjustment_period # adjustment period for structural primary balance, for COM 4 or 7 years
-        self.adjustment_start_year = adjustment_start_year # start year of adjustment period
-        self.adjustment_start = self.adjustment_start_year - start_year # start (T+x) of adjustment period
-        self.adjustment_end_year = self.adjustment_start_year + adjustment_period - 1 # end year of adjustment period
-        self.adjustment_end = self.adjustment_start_year + adjustment_period - start_year - 1  # end (T+x) of adjustment period
-        self.ageing_cost_period = ageing_cost_period # number of years during which ageing costs have to be accounted for by spb adjustment
-        self.fiscal_multiplier = fiscal_multiplier # fiscal multiplier for fiscal adjustment
-        self.fiscal_multiplier_persistence = fiscal_multiplier_persistence # persistence of fiscal multiplier
-        self.fiscal_multiplier_type = fiscal_multiplier_type # type of fiscal multiplier
-        self.bond_data = bond_data # True if bond level data is used for repayment profile
+        self.country = country  # country ISO code
+        self.start_year = start_year  # start year of projection (T), normally the last year of non-forecast observations
+        self.end_year = end_year  # end year of projection (T+30)
+        self.projection_period = self.end_year - self.start_year + 1  # number of years in projection
+        self.adjustment_period = adjustment_period  # adjustment period for structural primary balance, for COM 4 or 7 years
+        self.adjustment_start_year = adjustment_start_year  # start year of adjustment period
+        self.adjustment_start = self.adjustment_start_year - self.start_year  # start (T+x) of adjustment period
+        self.adjustment_end_year = self.adjustment_start_year + self.adjustment_period - 1  # end year of adjustment period
+        self.adjustment_end = self.adjustment_end_year - self.start_year  # end (T+x) of adjustment period
+        self.ageing_cost_period = ageing_cost_period  # number of years during which ageing costs must be accounted for by SPB adjustment
+        self.fiscal_multiplier = fiscal_multiplier  # fiscal multiplier for fiscal adjustment
+        self.fiscal_multiplier_persistence = fiscal_multiplier_persistence  # persistence of fiscal multiplier
+        self.fiscal_multiplier_type = fiscal_multiplier_type  # type of fiscal multiplier
+        self.bond_data = bond_data  # True if bond level data is available
 
-        # Initialize model variables related to GDP, growth, inflation
-        self.rg_bl = np.full(self.projection_period, np.nan, dtype=np.float64)  # baseline growth rate
-        self.ng_bl = np.full(self.projection_period, np.nan, dtype=np.float64)  # baseline nominal growth rate
-        self.ngdp_bl = np.full(self.projection_period, np.nan, dtype=np.float64)  # baseline nominal GDP
-        self.rgdp_bl = np.full(self.projection_period, np.nan, dtype=np.float64)  # baseline real GDP
-        self.output_gap_bl = np.full(self.projection_period, np.nan, dtype=np.float64)  # baseline output gap
-        self.rg = np.full(self.projection_period, np.nan, dtype=np.float64)  # real growth rate adjusted for fiscal_multiplier
-        self.ng = np.full(self.projection_period, np.nan, dtype=np.float64)  # nominal growth rate
-        self.ngdp = np.full(self.projection_period, np.nan, dtype=np.float64)  # nominal GDP adjusted for fiscal_multiplier
-        self.rgdp = np.full(self.projection_period, np.nan, dtype=np.float64)  # real GDP adjusted for fiscal_multiplier
-        self.rgdp_pot = np.full(self.projection_period, np.nan, dtype=np.float64)  # potential GDP
-        self.output_gap = np.full(self.projection_period, np.nan, dtype=np.float64)  # output gap
-        self.rg_pot = np.full(self.projection_period, np.nan, dtype=np.float64)  # potential growth rate
-        self.pi = np.full(self.projection_period, np.nan, dtype=np.float64)  # inflation rate
-        self.fiscal_multiplier_effect = np.full(self.projection_period, 0, dtype=np.float64)  # fiscal multiplier impulse
+        # Initiate model variables as numpy arrays
+        nan_vars = [
+            'rg_bl',                      # baseline growth rate
+            'rg_pot_bl',                  # baseline potential growth rate
+            'ng_bl',                      # baseline nominal growth rate
+            'ngdp_bl',                    # baseline nominal GDP
+            'rgdp_bl',                    # baseline real GDP
+            'rgdp_pot_bl',                # baseline potential GDP
+            'output_gap_bl',              # baseline output gap
+            'rg',                         # real growth rate adjusted for fiscal_multiplier
+            'ng',                         # nominal growth rate
+            'ngdp',                       # nominal GDP adjusted for fiscal_multiplier
+            'rgdp',                       # real GDP adjusted for fiscal_multiplier
+            'rgdp_pot',                   # potential GDP
+            'output_gap',                 # output gap
+            'rg_pot',                     # potential growth rate
+            'pi',                         # inflation rate
+            'ageing_cost',                # ageing cost
+            'property_income',            # property income
+            'property_income_component',  # property income component of primary balance
+            'PB',                         # primary balance
+            'pb',                         # primary balance over GDP
+            'SPB',                        # structural primary balance
+            'spb_bl',                     # baseline primary balance over GDP
+            'spb_bca',                    # structural primary balance over GDP before cost of ageing
+            'spb',                        # structural primary balance over GDP
+            'spb_bca_adjustment',         # change in structural primary balance
+            'GFN',                        # gross financing needs
+            'OB',                         # fiscal balance
+            'ob',                         # fiscal balance over GDP
+            'SB',                         # structural balance
+            'sb',                         # structural balance over GDP
+            'net_expenditure_growth',     # expenditure growth rate
+            'd',                          # debt to GDP ratio
+            'D_share_lt_maturing',        # share of long-term debt maturing in the current year
+            'repayment_st',               # repayment of short-term debt
+            'repayment_lt',               # repayment of long-term debt
+            'repayment',                  # repayment of total debt
+            'interest_st',                # interest payment on short-term debt
+            'interest_lt',                # interest payment on long-term debt
+            'interest',                   # interest payment on total debt
+            'interest_ratio',             # interest payment over GDP
+            'i_st',                       # market interest rate on short-term debt
+            'i_lt',                       # market interest rate on long-term debt
+            'i_st_bl',                    # baseline market interest rate on short-term debt
+            'i_lt_bl',                    # baseline market interest rate on long-term debt
+            'exr_eur',                    # euro exchange rate
+            'exr_usd',                    # usd exchange rate
+            'iir_bl',                     # baseline implicit interest rate
+            'alpha',                      # share of short-term debt in total debt
+            'beta',                       # share of new long-term debt in total long-term debt
+            'iir',                        # implicit interest rate
+            'iir_lt',                     # implicit long-term interest rate
+            'exr'                         # exchange rate
+        ]
 
-        # Initialize model variables related to primary balance and components
-        self.ageing_cost = np.full(self.projection_period, np.nan, dtype=np.float64)  # ageing cost
-        self.pension_revenue = np.full(self.projection_period, 0, dtype=np.float64)  # pension revenue
-        self.property_income = np.full(self.projection_period, np.nan, dtype=np.float64)  # property income
-        self.property_income_component = np.full(self.projection_period, np.nan, dtype=np.float64)  # property income component of primary balance
-        self.cyclical_component = np.full(self.projection_period, 0, dtype=np.float64)  # cyclical_component component of primary balance
-        self.ageing_component = np.full(self.projection_period, 0, dtype=np.float64)  # ageing_component component of primary balance
-        self.PB = np.full(self.projection_period, np.nan, dtype=np.float64)  # primary balance
-        self.pb = np.full(self.projection_period, np.nan, dtype=np.float64)  # primary balance over GDP
-        self.SPB = np.full(self.projection_period, np.nan, dtype=np.float64)  # structural primary balance
-        self.spb_bl = np.full(self.projection_period, np.nan, dtype=np.float64)  # baseline primary balance over GDP
-        self.spb_bca = np.full(self.projection_period, np.nan, dtype=np.float64)  # structural primary balance over GDP before cost of ageing
-        self.spb = np.full(self.projection_period, np.nan, dtype=np.float64)  # structural primary balance over GDP
-        self.spb_bca_adjustment = np.full(self.projection_period, np.nan, dtype=np.float64)  # change in structural primary balance
-        self.GFN = np.full(self.projection_period, np.nan, dtype=np.float64)  # gross financing needs
-        self.SF = np.full(self.projection_period, 0, dtype=np.float64)  # stock-flow adjustment
-        self.sf = np.full(self.projection_period, 0, dtype=np.float64)  # stock-flow adjustment over GDP
-        self.OB = np.full(self.projection_period, np.nan, dtype=np.float64)  # fiscal balance
-        self.ob = np.full(self.projection_period, np.nan, dtype=np.float64)  # fiscal balance over GDP
-        self.SB = np.full(self.projection_period, np.nan, dtype=np.float64)  # structural balance
-        self.sb = np.full(self.projection_period, np.nan, dtype=np.float64)  # structural balance over GDP
-        self.net_expenditure_growth = np.full(self.projection_period, np.nan, dtype=np.float64)  # expenditure growth rate
+        for var in nan_vars:
+            setattr(self, var, np.full(self.projection_period, np.nan, dtype=np.float64))
 
-        # Initialize model variables related to debt and interest variables
-        self.D = np.full(self.projection_period, 0, dtype=np.float64)  # total debt
-        self.d = np.full(self.projection_period, np.nan, dtype=np.float64)  # debt to GDP ratio
-        self.D_lt = np.full(self.projection_period, 0, dtype=np.float64)  # total long-term debt
-        self.D_new_lt = np.full(self.projection_period, 0, dtype=np.float64)  # new long-term debt
-        self.D_lt_esm = np.full(self.projection_period, 0, dtype=np.float64)  # inst debt
-        self.D_st = np.full(self.projection_period, 0, dtype=np.float64)  # total short-term debt
-        self.D_share_lt_maturing = np.full(self.projection_period, np.nan, dtype=np.float64)  # share of long-term debt maturing in the current year
-        self.repayment_st = np.full(self.projection_period, np.nan, dtype=np.float64)  # repayment of short-term debt
-        self.repayment_lt = np.full(self.projection_period, np.nan, dtype=np.float64)  # repayment of long-term debt
-        self.repayment_lt_esm = np.full(self.projection_period, 0, dtype=np.float64)  # repayment of inst debt
-        self.repayment_lt_bond = np.full(self.projection_period, 0, dtype=np.float64)  # repayment of past bond issuance
-        self.repayment = np.full(self.projection_period, np.nan, dtype=np.float64)  # repayment of total debt
-        self.interest_st = np.full(self.projection_period, np.nan, dtype=np.float64)  # interest payment on short-term debt
-        self.interest_lt = np.full(self.projection_period, np.nan, dtype=np.float64)  # interest payment on long-term debt
-        self.interest = np.full(self.projection_period, np.nan, dtype=np.float64)  # interest payment on total debt
-        self.interest_ratio = np.full(self.projection_period, np.nan, dtype=np.float64)  # interest payment over GDP
-        self.i_st = np.full(self.projection_period, np.nan, dtype=np.float64)  # market interest rate on short-term debt
-        self.i_lt = np.full(self.projection_period, np.nan, dtype=np.float64)  # market interest rate on long-term debt
-        self.exr_eur = np.full(self.projection_period, np.nan, dtype=np.float64)  # euro exchange rate
-        self.exr_usd = np.full(self.projection_period, np.nan, dtype=np.float64)  # usd exchange rate
-        self.iir_bl = np.full(self.projection_period, np.nan, dtype=np.float64)  # baseline implicit interest rate
-        self.alpha = np.full(self.projection_period, np.nan, dtype=np.float64)  # share of short-term debt in total debt
-        self.beta = np.full(self.projection_period, np.nan, dtype=np.float64)  # share of new long-term debt in total long-term debt
-        self.iir = np.full(self.projection_period, np.nan, dtype=np.float64)  # impoict interest rate
-        self.iir_lt = np.full(self.projection_period, np.nan, dtype=np.float64)  # implicit long-term interest rate
+        zero_vars = [
+            'fiscal_multiplier_effect',  # fiscal multiplier impulse
+            'pension_revenue',           # pension revenue
+            'cyclical_component',        # cyclical component of primary balance
+            'ageing_component',          # ageing component of primary balance
+            'SF',                        # stock-flow adjustment
+            'sf',                        # stock-flow adjustment over GDP
+            'D',                         # total debt
+            'D_lt',                      # total long-term debt
+            'D_new_lt',                  # new long-term debt
+            'D_lt_esm',                  # inst debt
+            'D_st',                      # total short-term debt
+            'repayment_lt_esm',          # repayment of inst debt
+            'repayment_lt_bond'          # repayment of past bond issuance
+        ]
 
-        # Auxiliary variables for stochastic simulations
-        self.exr = np.full(self.projection_period, np.nan, dtype=np.float64)  # exchange rate
+        for var in zero_vars:
+            setattr(self, var, np.full(self.projection_period, 0, dtype=np.float64))
 
         # Clean data
         self._clean_data()
@@ -162,16 +171,17 @@ class DsaModel:
         self._clean_debt()
         self._clean_esm_repayment()
         self._clean_debt_redemption()
-        if self.bond_data: self._clean_bond_repayment()
+        if self.bond_data: 
+            self._clean_bond_repayment()
         self._clean_pb()
         self._clean_implicit_interest_rate()
-        self._clean_forward_rates()
+        self._clean_market_rates()
         self._clean_stock_flow()
         self._clean_exchange_rate()
         self._clean_ageing_cost()
         self._clean_pension_revenue()
         self._clean_property_income()
-    
+
     def _load_input_data(self):
         """
         Load deterministic data from CSV file.
@@ -188,13 +198,17 @@ class DsaModel:
         for t, y in enumerate(range(self.start_year, self.end_year + 1)):
             
             # potential growth is based on OGWG up to T+5, long-run estimates from 2033, interpoalted in between
-            self.rg_pot[t] = self.df_deterministic_data.loc[y, 'POTENTIAL_GDP_GROWTH']
+            self.rg_pot_bl[t] = self.df_deterministic_data.loc[y, 'POTENTIAL_GDP_GROWTH']
             
             # potential GDP up to T+5 are from OGWG, after that projected based on growth rate
             if t <= 5:
-                self.rgdp_pot[t] = self.df_deterministic_data.loc[y, 'POTENTIAL_GDP']
+                self.rgdp_pot_bl[t] = self.df_deterministic_data.loc[y, 'POTENTIAL_GDP']
             else:
-                self.rgdp_pot[t] = self.rgdp_pot[t - 1] * (1 + self.rg_pot[t] / 100)    
+                self.rgdp_pot_bl[t] = self.rgdp_pot_bl[t - 1] * (1 + self.rg_pot_bl[t] / 100) 
+
+        # Set initial values to baseline
+        self.rg_pot = np.copy(self.rg_pot_bl)   
+        self.rgdp_pot = np.copy(self.rgdp_pot_bl)
 
     def _clean_rgdp(self):
         """
@@ -370,23 +384,58 @@ class DsaModel:
         """
         # Get implicit interest rate from Ameco
         for t, y in enumerate(range(self.start_year, self.start_year + 3)):
-            self.iir[t] = self.df_deterministic_data.loc[y, 'IMPLICIT_INTEREST_RATE']
+            self.iir_bl[t] = self.df_deterministic_data.loc[y, 'IMPLICIT_INTEREST_RATE']
+
+        # Set initial values to baseline
+        self.iir = np.copy(self.iir_bl)
 
         # Initial lt baseline
         self.iir_lt[0] = self.iir[0] * (1 - self.D_share_st)
     
-    def _clean_forward_rates(self):
+    def _clean_market_rates(self):
         """
-        Clean forward Bloomberg forward and benchmark rates.
+        Clean forward Bloomberg forward and benchmark rates. Interpolate missing values.
         """
         # Get benchmark rates for first years
         for t, y in enumerate(range(self.start_year, self.start_year + 2)):
-            self.i_st[t] = self.df_deterministic_data.loc[y, 'INTEREST_RATE_ST']
-            self.i_lt[t] = self.df_deterministic_data.loc[y, 'INTEREST_RATE_LT']
+            self.i_st_bl[t] = self.df_deterministic_data.loc[y, 'INTEREST_RATE_ST']
+            self.i_lt_bl[t] = self.df_deterministic_data.loc[y, 'INTEREST_RATE_LT']
 
         # Load 10 year forward rates
         self.fwd_rate_st = self.df_deterministic_data.loc[0, 'FWD_RATE_3M10Y']
         self.fwd_rate_lt = self.df_deterministic_data.loc[0, 'FWD_RATE_10Y10Y']
+
+        # Clean vectors in case of repeated projection with different scenarios
+        self.i_st_bl[2:] = np.nan
+        self.i_lt_bl[2:] = np.nan
+
+        # Set T + 10 value as market fwd rate
+        self.i_st_bl[10] = self.fwd_rate_st
+        self.i_lt_bl[10] = self.fwd_rate_lt
+
+        # Set t + 30 values
+        if self.country in ['POL', 'ROU']: 
+            self.i_lt_bl[30:] = 4.5
+        elif self.country in ['HUN']: 
+            self.i_lt_bl[30:] = 5
+        else: 
+            self.i_lt_bl[30:] = 4
+
+        yield_curve_coef = 0.5
+        self.i_st_bl[30:] = self.i_lt[30] * yield_curve_coef
+
+        # Interpolate missing values
+        x_st = np.arange(len(self.i_st_bl))
+        mask_st = np.isnan(self.i_st_bl)
+        self.i_st_bl[mask_st] = np.interp(x_st[mask_st], x_st[~mask_st], self.i_st_bl[~mask_st])
+
+        x_lt = np.arange(len(self.i_lt_bl))
+        mask_lt = np.isnan(self.i_lt_bl)
+        self.i_lt_bl[mask_lt] = np.interp(x_lt[mask_lt], x_lt[~mask_lt], self.i_lt_bl[~mask_lt])
+
+        # Set initial values to baseline
+        self.i_st = np.copy(self.i_st_bl)
+        self.i_lt = np.copy(self.i_lt_bl)
 
     def _clean_stock_flow(self):
         """
@@ -431,7 +480,8 @@ class DsaModel:
         """
         for t, y in enumerate(range(self.start_year, self.end_year + 1)):
             self.pension_revenue[t] = self.df_deterministic_data.loc[y, 'PENSION_REVENUE']
-            if np.isnan(self.pension_revenue[t]): self.pension_revenue[t] = 0
+            if np.isnan(self.pension_revenue[t]): 
+                self.pension_revenue[t] = 0
 
     def _clean_property_income(self):
         """
@@ -455,9 +505,9 @@ class DsaModel:
         """
         Project debt dynamics
         """
-        # Clear starting values from memory
-        self.D_new_lt = np.full(self.projection_period, 0, dtype=np.float64)
-        self._clean_implicit_interest_rate()
+
+        # Reset starting values
+        self._reset_starting_values()
 
         # Set adjustment targets and steps
         self._set_adjustment(spb_target, spb_steps, edp_steps, deficit_resilience_steps, post_spb_steps)
@@ -467,12 +517,31 @@ class DsaModel:
 
         # Project debt dynamics
         self._project_net_expenditure_path()
-        self._project_market_rate()
         self._project_gdp()
         self._project_stock_flow()
         self._project_spb()
         self._project_pb_from_spb()
         self._project_debt_ratio()
+
+    def _reset_starting_values(self):
+        """
+        Reset starting values for projection to avoid cumulative change from scenario application.
+        """
+        
+        # Reset starting values for market rates
+        self.i_st = np.copy(self.i_st_bl)
+        self.i_lt = np.copy(self.i_lt_bl)
+
+        # Reset starting values for growth
+        self.rgdp = np.copy(self.rgdp_bl)
+        self.rg = np.copy(self.rg_bl)
+        self.rg_pot = np.copy(self.rg_pot_bl)
+        self.rgdp_pot = np.copy(self.rgdp_pot_bl)
+
+        # Reset starting values for debt issuance and implicit interest rate
+        self.D_new_lt = np.full(self.projection_period, 0, dtype=np.float64)
+        self.iir = np.copy(self.iir_bl)
+        self.iir_lt[0] = self.iir[0] * (1 - self.D_share_st)
 
     def _set_adjustment(self, spb_target, spb_steps, edp_steps, deficit_resilience_steps, post_spb_steps):
         """
@@ -615,74 +684,41 @@ class DsaModel:
             else:
                 self.spb_bca[t] = self.spb_bca[t - 1]
 
-    def _project_market_rate(self):
-        """
-        Project market rate data, needs to be in projection method because of scenario parameter.
-        Uses BBG forward rates up to T+10, then linearly interpolates to long-term values.
-        """
-        # Clean vectors in case of repeated projection with different scenarios
-        self.i_st[2:] = np.nan
-        self.i_lt[2:] = np.nan
-
-        # Set T + 10 value as market fwd rate
-        self.i_st[10] = self.fwd_rate_st
-        self.i_lt[10] = self.fwd_rate_lt
-
-        # Set t + 30 values
-        if self.country in ['POL', 'ROU']: self.i_lt[30:] = 4.5
-        elif self.country in ['HUN']: self.i_lt[30:] = 5
-        else: self.i_lt[30:] = 4
-
-        yield_curve_coef = 0.5
-        self.i_st[30:] = self.i_lt[30] * yield_curve_coef
-
-        # Interpolate missing values
-        x_st = np.arange(len(self.i_st))
-        mask_st = np.isnan(self.i_st)
-        self.i_st[mask_st] = np.interp(x_st[mask_st], x_st[~mask_st], self.i_st[~mask_st])
-
-        x_lt = np.arange(len(self.i_lt))
-        mask_lt = np.isnan(self.i_lt)
-        self.i_lt[mask_lt] = np.interp(x_lt[mask_lt], x_lt[~mask_lt], self.i_lt[~mask_lt])
-
-        if self.scenario == 'adverse_r_g':
-            self._apply_adverse_r()
-
-    def _apply_adverse_r(self):
-        """
-        Applies adverse interest rate conditions for adverse r-g scenario
-        """
-        self.i_st[self.adjustment_end + 1:] += 0.5
-        self.i_lt[self.adjustment_end + 1:] += 0.5
-
     def _project_gdp(self):
         """
         Project nominal GDP.
         """
-        assert self.fiscal_multiplier_type in ['bruegel', 'com'], 'Fiscal multiplier type not recognized'
+        # Apply adverse r-g scenario if specified
+        if self.scenario == 'adverse_r_g': 
+            self._apply_adverse_r_g()
+
+        # Project real GDP and apply fiscal multiplier effect
         for t in range(1, self.projection_period):
-            if self.fiscal_multiplier_type == 'bruegel':
-                self._calculate_rgdp_bruegel(t)
-            elif self.fiscal_multiplier_type == 'com': 
+            if self.fiscal_multiplier_type == 'com': 
                 self._calculate_rgdp_com(t)
+            elif self.fiscal_multiplier_type == 'bruegel': 
+                self._calculate_rgdp_bruegel(t)
+            else : 
+                raise ValueError('Fiscal multiplier type not recognized')
             self._calculate_ngdp(t)
 
-    def _calculate_rgdp_bruegel(self, t):
+    def _apply_adverse_r_g(self):
         """
-        Calcualtes real GDP and real growth, assumes persistence in fiscal_multiplier effect leading to output gap closing in 3 years
+        Applies adverse interest rate and growth conditions for adverse r-g scenario
         """
-        # Fiscal multiplier effect from change in SPB relative to baseline
-        self.fiscal_multiplier_effect[t] = self.fiscal_multiplier * ((self.spb_bca[t] - self.spb_bca[t - 1]) - (self.spb_bl[t] - self.spb_bl[t - 1]))
+        for t in range(self.adjustment_end + 1, self.projection_period):
 
-        # Calculate persistence term of multiplier effect
-        persistence_term = sum([self.fiscal_multiplier_effect[t - i] * (self.fiscal_multiplier_persistence - i) / self.fiscal_multiplier_persistence for i in range(1, self.fiscal_multiplier_persistence)])
+            # Increase short and long term interest rates by 0.5
+            self.i_st[t] += 0.5
+            self.i_lt[t] += 0.5
 
-        # Fiscal multiplier effect on output gap
-        self.output_gap[t] = self.output_gap_bl[t] - self.fiscal_multiplier_effect[t] - persistence_term
+            # Decrease real and potential growth by 0.5
+            self.rg[t] = self.rg_bl[t] - 0.5
+            self.rgdp[t] = self.rgdp[t - 1] * (1 + (self.rg[t]) / 100)
 
-        # Real growth and real GDP
-        self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
-        self.rg[t] = (self.rgdp[t] - self.rgdp[t - 1]) / self.rgdp[t - 1] * 100
+            # baseline output gap at adjustment end is zero, so we can use the actual growth values
+            self.rg_pot[t] = self.rg[t]
+            self.rgdp_pot[t] = self.rgdp[t]
 
     def _calculate_rgdp_com(self, t):
         """
@@ -690,6 +726,10 @@ class DsaModel:
         """
         # Fiscal multiplier effect from change in SPB relative to baseline
         self.fiscal_multiplier_effect[t] = self.fiscal_multiplier * ((self.spb_bca[t] - self.spb_bca[t - 1]) - (self.spb_bl[t] - self.spb_bl[t - 1]))
+
+        # Add spillover effect to fiscal_multiplier effect if defined
+        if hasattr(self, 'fiscal_multiplier_spillover'): 
+            self.fiscal_multiplier_effect[t] += self.fiscal_multiplier_spillover[t]
 
         # Output gap
         if t == self.adjustment_start: 
@@ -702,6 +742,27 @@ class DsaModel:
         elif t in range(self.adjustment_end + 1, self.adjustment_end + self.fiscal_multiplier_persistence + 1) and self.policy_change:
             self.output_gap[t] = self.output_gap[t-1] - 1 / self.fiscal_multiplier_persistence * self.output_gap[self.adjustment_end]
                 
+        # Real growth and real GDP
+        self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
+        self.rg[t] = (self.rgdp[t] - self.rgdp[t - 1]) / self.rgdp[t - 1] * 100
+
+    def _calculate_rgdp_bruegel(self, t):
+        """
+        Calcualtes real GDP and real growth, assumes persistence in fiscal_multiplier effect leading to output gap closing in 3 years
+        """
+        # Fiscal multiplier effect from change in SPB relative to baseline
+        self.fiscal_multiplier_effect[t] = self.fiscal_multiplier * ((self.spb_bca[t] - self.spb_bca[t - 1]) - (self.spb_bl[t] - self.spb_bl[t - 1]))
+
+        # Add spillover effect to fiscal_multiplier effect if defined
+        if hasattr(self, 'fiscal_multiplier_spillover'): 
+            self.fiscal_multiplier_effect[t] += self.fiscal_multiplier_spillover[t]
+
+        # Calculate persistence term of multiplier effect
+        persistence_term = sum([self.fiscal_multiplier_effect[t - i] * (self.fiscal_multiplier_persistence - i) / self.fiscal_multiplier_persistence for i in range(1, self.fiscal_multiplier_persistence)])
+
+        # Fiscal multiplier effect on output gap
+        self.output_gap[t] = self.output_gap_bl[t] - self.fiscal_multiplier_effect[t] - persistence_term
+
         # Real growth and real GDP
         self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
         self.rg[t] = (self.rgdp[t] - self.rgdp[t - 1]) / self.rgdp[t - 1] * 100
@@ -719,18 +780,9 @@ class DsaModel:
         elif t >= self.adjustment_start:
             self.ng[t] = (1 + self.rg[t] / 100) * (1 + self.pi[t] / 100) * 100 - 100
 
-            # Adjust nominal growth for adverse r-g scenario
-            if self.scenario == 'adverse_r_g' and t > self.adjustment_end:
-                self._apply_adverse_g(t)
-
             # project nominal GDP
             self.ngdp[t] = self.ngdp[t - 1] * (1 + self.ng[t] / 100)
 
-    def _apply_adverse_g(self, t):
-        """
-        Applies adverse growth conditions for adverse r-g scenario
-        """
-        self.ng[t] -= 0.5
 
     def _project_stock_flow(self):
         """

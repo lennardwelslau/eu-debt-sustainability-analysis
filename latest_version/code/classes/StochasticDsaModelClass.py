@@ -23,6 +23,7 @@
 # ========================================================================================= #
 
 # Import libraries and modules
+import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -33,7 +34,6 @@ from scipy.optimize import minimize_scalar
 from statsmodels.tsa.api import VAR
 from numba import jit
 from classes import DsaModel
-
 
 class StochasticDsaModel(DsaModel):
 
@@ -143,12 +143,16 @@ class StochasticDsaModel(DsaModel):
         self.N = N
 
         # Draw shocks from a multivariate normal distribution or VAR model
-        if self.estimation == 'normal': self._draw_shocks_normal()
-        if self.estimation == 'var': self._draw_shocks_var()
+        if self.estimation == 'normal': 
+            self._draw_shocks_normal()
+        elif self.estimation == 'var': 
+            self._draw_shocks_var()
 
         # Aggregate quarterly shocks to annual shocks
-        if self.shock_frequency == 'quarterly': self._aggregate_shocks_quarterly()
-        if self.shock_frequency == 'annual': self._aggregate_shocks_annual()
+        if self.shock_frequency == 'quarterly': 
+            self._aggregate_shocks_quarterly()
+        elif self.shock_frequency == 'annual': 
+            self._aggregate_shocks_annual()
                 
         # Add shocks to baseline variables and set start values
         self._combine_shocks_baseline()
@@ -460,7 +464,8 @@ class StochasticDsaModel(DsaModel):
         # Saveplot data in a dataframe if self.save_df is specified
         self.df_fanchart = pd.DataFrame({'year': years, 'baseline': bl_var})
         for pct in self.pcts_dict:
-            df_pct = pd.DataFrame({'year': years[self.stochastic_start-1:self.stochastic_end+1], f'p{pct}': self.pcts_dict[pct]})
+            df_pct = pd.DataFrame({'year': years[self.stochastic_start-1:self.stochastic_end+1], f'p{pct}': 
+            self.pcts_dict[pct]})
             self.df_fanchart = self.df_fanchart.merge(df_pct, on='year', how='left')
 
         # Save plot if save_as is specified
@@ -634,7 +639,8 @@ class StochasticDsaModel(DsaModel):
         self.spb_target_dict = {}
         self.pb_target_dict = {}
         self.binding_parameter_dict = {}
-        if self.save_df: self.df_dict = {}
+        if self.save_df: 
+            self.df_dict = {}
 
         # Run DSA and deficit criteria and project toughest under baseline assumptions
         self.project(spb_target=None, edp_steps=None) # clear projection
@@ -647,8 +653,10 @@ class StochasticDsaModel(DsaModel):
         else:
             self.edp_period = 0
             self.edp_end = self.adjustment_start - 1
-        if debt_safeguard: self._apply_debt_safeguard()
-        if deficit_resilience: self._apply_deficit_resilience()
+        if debt_safeguard: 
+            self._apply_debt_safeguard()
+        if deficit_resilience: 
+            self._apply_deficit_resilience()
 
         # Save binding SPB and PB target
         self.spb_target_dict['binding'] = self.spb_bca[self.adjustment_end]
@@ -671,10 +679,12 @@ class StochasticDsaModel(DsaModel):
         self.binding_parameter_dict['net_expenditure_growth'] = self.net_expenditure_growth[self.adjustment_start:self.adjustment_end+1]
         
         # Print results
-        if print_results: self._print_results_tables(edp, debt_safeguard, deficit_resilience)
+        if print_results: 
+            self._print_results_tables(edp, debt_safeguard, deficit_resilience)
         
         # Save dataframe
-        if self.save_df: self.df_dict['binding'] = self.df(all=True)
+        if self.save_df: 
+            self.df_dict['binding'] = self.df(all=True)
 
     def _run_dsa(self, criterion='all'):
         """
@@ -702,7 +712,8 @@ class StochasticDsaModel(DsaModel):
                 self.find_spb_stochastic()
                 self.spb_target_dict['stochastic'] = self.spb_bca[self.adjustment_end]
                 self.pb_target_dict['stochastic'] = self.pb[self.adjustment_end]
-                if self.save_df: self.df_dict['stochastic'] = self.df(all=True)
+                if self.save_df: 
+                    self.df_dict['stochastic'] = self.df(all=True)
             except:
                 pass
 
@@ -744,7 +755,8 @@ class StochasticDsaModel(DsaModel):
                 edp_steps=self.edp_steps,
                 scenario=None
                 )
-            if self.save_df: self.df_dict['edp'] = self.df(all=True)
+            if self.save_df: 
+                self.df_dict['edp'] = self.df(all=True)
         else:
             self.edp_binding = False
 
@@ -779,7 +791,8 @@ class StochasticDsaModel(DsaModel):
                 self.binding_criterion = 'debt_safeguard'
                 self.spb_target_dict['debt_safeguard'] = self.binding_spb_target
                 self.pb_target_dict['debt_safeguard'] = self.pb[self.adjustment_end]
-                if self.save_df: self.df_dict['debt_safeguard'] = self.df(all=True)
+                if self.save_df: 
+                    self.df_dict['debt_safeguard'] = self.df(all=True)
         else:
             self.debt_safeguard_binding = False
 
@@ -798,7 +811,8 @@ class StochasticDsaModel(DsaModel):
             self.spb_target_dict['deficit_resilience'] = self.spb_bca[self.adjustment_end]
             self.pb_target_dict['deficit_resilience'] = self.pb[self.adjustment_end]
             self.binding_spb_target = self.spb_bca[self.adjustment_end]
-            if self.save_df: self.df_dict['deficit_resilience'] = self.df(all=True)
+            if self.save_df: 
+                self.df_dict['deficit_resilience'] = self.df(all=True)
         else:
             self.deficit_resilience_binding = False
                 
@@ -808,13 +822,18 @@ class StochasticDsaModel(DsaModel):
         """
         # Prepare data for the tables
         model_params = {
-            'country': self.country,
-            'adjustment period': self.adjustment_period,
-            'adjustment start': self.adjustment_start_year,
-            'shock frequency': self.shock_frequency,
+            'country': 
+            self.country,
+            'adjustment period': 
+            self.adjustment_period,
+            'adjustment start': 
+            self.adjustment_start_year,
+            'shock frequency': 
+            self.shock_frequency,
             'stochastic period': f"{self.stochastic_start_year}-{self.stochastic_start_year + self.stochastic_period}",
             'estimation': f"{self.estimation} {'' if self.estimation == 'normal' else '(' + self.estimation_method + ')'}",
-            'bond level data': self.bond_data,
+            'bond level data': 
+            self.bond_data,
             'safeguards': f"{'EDP,' if edp else ''} {'debt,' if debt_safeguard else ''} {'deficit_resilience' if deficit_resilience else ''}"
         }
         spb_targets = {key: f"{value:.3f}" for key, value in self.spb_target_dict.items()}
