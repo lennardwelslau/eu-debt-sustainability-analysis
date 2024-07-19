@@ -652,7 +652,7 @@ class StochasticDsaModel(DsaModel):
             self._apply_edp()
         else:
             self.edp_period = 0
-            self.edp_end = self.adjustment_start - 1
+            self.edp_end = self.adjustment_start - 2
         if debt_safeguard: 
             self._apply_debt_safeguard()
         if deficit_resilience: 
@@ -768,9 +768,9 @@ class StochasticDsaModel(DsaModel):
         self.edp_steps[:self.edp_period] = self.spb_steps[:self.edp_period]
 
         if hasattr(self, 'predefined_spb_steps'):
-            debt_safeguard_start = max(self.adjustment_start + len(self.predefined_spb_steps) - 1, self.edp_end)
+            debt_safeguard_start = max(self.adjustment_start + len(self.predefined_spb_steps) - 1, self.edp_end + 1)
         else:
-            debt_safeguard_start = self.edp_end
+            debt_safeguard_start = self.edp_end + 1
 
         # Debt safeguard binding for countries with high debt and debt decline below 4 or 2 % for 4 years after edp
         debt_safeguard_decline = 1 if self.d[self.adjustment_start - 1] > 90 else 0.5

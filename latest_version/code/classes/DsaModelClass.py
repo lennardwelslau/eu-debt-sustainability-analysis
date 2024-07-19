@@ -720,6 +720,27 @@ class DsaModel:
             self.rg_pot[t] = self.rg[t]
             self.rgdp_pot[t] = self.rgdp[t]
 
+    def _calculate_rgdp_bruegel(self, t):
+        """
+        Calcualtes real GDP and real growth, assumes persistence in fiscal_multiplier effect leading to output gap closing in 3 years
+        """
+        # Fiscal multiplier effect from change in SPB relative to baseline
+        self.fiscal_multiplier_effect[t] = self.fiscal_multiplier * ((self.spb_bca[t] - self.spb_bca[t - 1]) - (self.spb_bl[t] - self.spb_bl[t - 1]))
+
+        # Add spillover effect to fiscal_multiplier effect if defined
+        if hasattr(self, 'fiscal_multiplier_spillover'): 
+            self.fiscal_multiplier_effect[t] += self.fiscal_multiplier_spillover[t]
+
+        # Calculate persistence term of multiplier effect
+        persistence_term = sum([self.fiscal_multiplier_effect[t - i] * (self.fiscal_multiplier_persistence - i) / self.fiscal_multiplier_persistence for i in range(1, self.fiscal_multiplier_persistence)])
+
+        # Fiscal multiplier effect on output gap
+        self.output_gap[t] = self.output_gap_bl[t] - self.fiscal_multiplier_effect[t] - persistence_term
+
+        # Real growth and real GDP
+        self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
+        self.rg[t] = (self.rgdp[t] - self.rgdp[t - 1]) / self.rgdp[t - 1] * 100
+
     def _calculate_rgdp_com(self, t):
         """
         Calcualtes real GDP and real growth, assumes output gap closes in 3 years with 2/3 and 1/3 rule
@@ -742,27 +763,6 @@ class DsaModel:
         elif t in range(self.adjustment_end + 1, self.adjustment_end + self.fiscal_multiplier_persistence + 1) and self.policy_change:
             self.output_gap[t] = self.output_gap[t-1] - 1 / self.fiscal_multiplier_persistence * self.output_gap[self.adjustment_end]
                 
-        # Real growth and real GDP
-        self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
-        self.rg[t] = (self.rgdp[t] - self.rgdp[t - 1]) / self.rgdp[t - 1] * 100
-
-    def _calculate_rgdp_bruegel(self, t):
-        """
-        Calcualtes real GDP and real growth, assumes persistence in fiscal_multiplier effect leading to output gap closing in 3 years
-        """
-        # Fiscal multiplier effect from change in SPB relative to baseline
-        self.fiscal_multiplier_effect[t] = self.fiscal_multiplier * ((self.spb_bca[t] - self.spb_bca[t - 1]) - (self.spb_bl[t] - self.spb_bl[t - 1]))
-
-        # Add spillover effect to fiscal_multiplier effect if defined
-        if hasattr(self, 'fiscal_multiplier_spillover'): 
-            self.fiscal_multiplier_effect[t] += self.fiscal_multiplier_spillover[t]
-
-        # Calculate persistence term of multiplier effect
-        persistence_term = sum([self.fiscal_multiplier_effect[t - i] * (self.fiscal_multiplier_persistence - i) / self.fiscal_multiplier_persistence for i in range(1, self.fiscal_multiplier_persistence)])
-
-        # Fiscal multiplier effect on output gap
-        self.output_gap[t] = self.output_gap_bl[t] - self.fiscal_multiplier_effect[t] - persistence_term
-
         # Real growth and real GDP
         self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
         self.rg[t] = (self.rgdp[t] - self.rgdp[t - 1]) / self.rgdp[t - 1] * 100
@@ -1018,10 +1018,10 @@ class DsaModel:
         self.project(spb_target=spb_target)
 
         # Define EDP threshold, set to 3% of GDP
-        self.edp_target = np.full(self.adjustment_period, -3, dtype=float)
+        self.edp_target = -3
 
         # If deficit excessive, increase spb by 0.5 annually until deficit below 3%
-        if self.ob[self.adjustment_start] < self.edp_target[0]:
+        if self.ob[self.adjustment_start] < self.edp_target:
 
             # Set start indices for spb and pb adjustment parts of EDP
             self.edp_spb_index = 0
@@ -1032,30 +1032,31 @@ class DsaModel:
             self._calculate_edp_sb()
             self._calculate_edp_end(spb_target=spb_target)
 
-        # If excessive deficit in year before adjustment start, set edp_end to adjustment start
-        elif self.ob[self.adjustment_start - 1] < self.edp_target[0]:
+        # If excessive deficit in year before adjustment start, set edp_end to year before adjustment start
+        elif self.ob[self.adjustment_start - 1] < self.edp_target:
             self.edp_period = 0
-            self.edp_end = self.adjustment_start
+            self.edp_end = self.adjustment_start - 1
             
         # If deficit not excessive, set EDP period to 0
         else:
             self.edp_period = 0
-            self.edp_end = self.adjustment_start - 1
+            self.edp_end = self.adjustment_start - 2
 
     def _save_edp_period(self):
         """
         Saves EDP period and end period
         """
         self.edp_period = np.where(~np.isnan(self.edp_steps))[0][-1] + 1
-        self.edp_end = self.adjustment_start + self.edp_period        
+        self.edp_end = self.adjustment_start + self.edp_period - 1        
 
     def _calculate_edp_spb(self):
         """
         Calculate EDP adjustment steps ensuring minimum strucutral primary balance adjustment
         """
         # Loop for SPB part of EDP: min. 0.5 spb adjustment while deficit > 3 and in spb adjustmet period
-        while (self.ob[self.adjustment_start + self.edp_spb_index] < self.edp_target[self.edp_spb_index]
+        while (self.ob[self.adjustment_start + self.edp_spb_index] <= self.edp_target
                 and self.edp_spb_index < self.edp_sb_index):
+            
             # Set EDP step to 0.5
             self.edp_steps[self.edp_spb_index] = 0.5
 
@@ -1072,8 +1073,8 @@ class DsaModel:
         Calculate EDP adjustment steps ensuring minimum strucutral balance adjustment
         """
         # Loop for SB balance part of EDP: min. 0.5 ob adjustment while deficit > 3 and before last period
-        while (self.ob[self.adjustment_start + self.edp_sb_index] < self.edp_target[self.edp_sb_index]
-                and self.edp_sb_index + 1 < self.adjustment_period):
+        while (self.ob[self.adjustment_start + self.edp_sb_index] <= self.edp_target
+                and self.edp_sb_index + 1 <= self.adjustment_period):
             
             # If sb adjustment is less than 0.5, increase by 0.001
             while (self.sb[self.adjustment_start + self.edp_sb_index] 
@@ -1100,7 +1101,7 @@ class DsaModel:
         """
         # If EDP lasts until penultimate adjustmet period, increase EDP steps to ensure deficit < 3
         if self.edp_period == self.adjustment_period:
-            while self.ob[self.adjustment_end] <= self.edp_target[-1]:
+            while self.ob[self.adjustment_end] < self.edp_target:
 
                 # Aim for linear adjustment path by increasing smallest EDP steps first
                 min_edp_steps = np.min(self.edp_steps[~np.isnan(self.edp_steps)])
@@ -1113,14 +1114,14 @@ class DsaModel:
                 self._save_edp_period()
 
         # If last EDP period has deficit < 3, we do not impose additional adjustment
-        if self.ob[self.adjustment_start - 1 + self.edp_period] >= self.edp_target[-1]:
+        if self.ob[self.adjustment_start - 1 + self.edp_period] >= self.edp_target:
             self.edp_steps[self.edp_sb_index:] = np.nan
             self._save_edp_period()
 
         # If no spb_target was specified, calculate to ensure deficit < 3 until adjustment end
         if spb_target is None:
             print('No SPB target specified, calculating to ensure deficit < 3')
-            while np.any(self.ob[self.edp_end:self.adjustment_end + 1] <= self.edp_target[-1]):
+            while np.any(self.ob[self.edp_end + 1:self.adjustment_end + 1] <= self.edp_target):
                 self.spb_target += 0.001
                 self.project(spb_target=self.spb_target, edp_steps=self.edp_steps)
 
@@ -1172,7 +1173,7 @@ class DsaModel:
         # If debt safeguard and EDP lasts until penultimate adjustment year, debt safeguard satisfied by default
         if (criterion == 'debt_safeguard'
                 and self.edp_period >= self.adjustment_period - 1):
-            self.spb_target = self.spb_bca[self.edp_end - 1]
+            self.spb_target = self.spb_bca[self.edp_end]
             self.project(
                 spb_target=self.spb_target,
                 edp_steps=self.edp_steps
@@ -1232,7 +1233,7 @@ class DsaModel:
         # If debt safeguard, apply adjustment to period after EDP
         if criterion == 'debt_safeguard':
             num_steps = self.adjustment_period - self.edp_period
-            step_size = (spb_target - self.spb_bca[self.edp_end - 1]) / num_steps
+            step_size = (spb_target - self.spb_bca[self.edp_end]) / num_steps
             non_edp_steps = np.full(num_steps, step_size)
             edp_steps_nonan = self.edp_steps[~np.isnan(self.edp_steps)]
             self.spb_steps = np.concatenate([edp_steps_nonan, non_edp_steps])
@@ -1287,9 +1288,9 @@ class DsaModel:
         debt_safeguard_decline = 1 if self.d[self.adjustment_start - 1] > 90 else 0.5
 
         if hasattr(self, 'predefined_spb_steps'):
-            debt_safeguard_start = max(self.adjustment_start + len(self.predefined_spb_steps) - 1, self.edp_end)
+            debt_safeguard_start = max(self.adjustment_start + len(self.predefined_spb_steps) - 1, self.edp_end + 1)
         else:
-            debt_safeguard_start = self.edp_end
+            debt_safeguard_start = self.edp_end + 1
 
         return (self.d[debt_safeguard_start] - self.d[self.adjustment_end]
                 >= debt_safeguard_decline * (self.adjustment_end - debt_safeguard_start))
