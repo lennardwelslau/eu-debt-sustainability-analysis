@@ -647,14 +647,21 @@ class StochasticDsaModel(DsaModel):
         self._run_dsa()
         self._get_binding()
 
-        # Apply EDP and safeguards
+        # Apply EDP
         if edp: 
             self._apply_edp()
+        elif self.ob[self.adjustment_start - 1] < -3:
+            self.edp_period = 0
+            self.edp_end = self.adjustment_start - 1
         else:
             self.edp_period = 0
             self.edp_end = self.adjustment_start - 2
+        
+        # Apply debt safeguard
         if debt_safeguard: 
             self._apply_debt_safeguard()
+
+        # Apply deficit resilience
         if deficit_resilience: 
             self._apply_deficit_resilience()
 
@@ -749,6 +756,7 @@ class StochasticDsaModel(DsaModel):
         self.find_edp(spb_target=self.binding_spb_target)
         if not np.all([np.isnan(self.edp_steps)]) and np.any([self.edp_steps >= self.spb_steps - 1e-8]):
             self.edp_binding = True 
+            print(self.edp_steps)
             self._run_dsa(criterion=self.binding_criterion)
             self.project(
                 spb_target=self.binding_spb_target, 

@@ -90,9 +90,6 @@ class DsaModel:
             'output_gap',                 # output gap
             'rg_pot',                     # potential growth rate
             'pi',                         # inflation rate
-            'ageing_cost',                # ageing cost
-            'property_income',            # property income
-            'property_income_component',  # property income component of primary balance
             'PB',                         # primary balance
             'pb',                         # primary balance over GDP
             'SPB',                        # structural primary balance
@@ -134,9 +131,15 @@ class DsaModel:
 
         zero_vars = [
             'fiscal_multiplier_effect',  # fiscal multiplier impulse
-            'pension_revenue',           # pension revenue
-            'cyclical_component',        # cyclical component of primary balance
+            'ageing_cost',               # ageing cost
             'ageing_component',          # ageing component of primary balance
+            'revenue',                   # revenue
+            'revenue_component',         # revenue component of primary balance
+            # 'pension_revenue',           # pension revenue
+            # 'pension_revenue_component', # pension revenue component of primary balance
+            # 'property_income',           # property income
+            # 'property_income_component', # property income component of primary balance
+            'cyclical_component',        # cyclical component of primary balance
             'SF',                        # stock-flow adjustment
             'sf',                        # stock-flow adjustment over GDP
             'D',                         # total debt
@@ -179,8 +182,9 @@ class DsaModel:
         self._clean_stock_flow()
         self._clean_exchange_rate()
         self._clean_ageing_cost()
-        self._clean_pension_revenue()
-        self._clean_property_income()
+        # self._clean_pension_revenue()
+        # self._clean_property_income()
+        self._clean_revenue()
 
     def _load_input_data(self):
         """
@@ -472,24 +476,27 @@ class DsaModel:
         # Import ageing costs from Ageing Report data
         for t, y in enumerate(range(self.start_year, self.end_year + 1)):
             self.ageing_cost[t] = self.df_deterministic_data.loc[y, 'AGEING_COST']
-
     
     def _clean_pension_revenue(self):
         """
         Clean pension revenue data.
         """
         for t, y in enumerate(range(self.start_year, self.end_year + 1)):
-            self.pension_revenue[t] = self.df_deterministic_data.loc[y, 'PENSION_REVENUE']
-            if np.isnan(self.pension_revenue[t]): 
-                self.pension_revenue[t] = 0
+            self.pension_revenue[t] = self.df_deterministic_data.loc[y, 'PENSION_REVENUE'] if not np.isnan(self.df_deterministic_data.loc[y, 'PENSION_REVENUE']) else 0
 
     def _clean_property_income(self):
         """
         Clean property income data.
         """
         for t, y in enumerate(range(self.start_year, self.end_year + 1)):
-            self.property_income[t] = self.df_deterministic_data.loc[y, 'PROPERTY_INCOME']
-
+            self.property_income[t] = self.df_deterministic_data.loc[y, 'PROPERTY_INCOME'] if not np.isnan(self.df_deterministic_data.loc[y, 'PROPERTY_INCOME']) else 0
+    
+    def _clean_revenue(self):
+        """
+        Clean property income and pension revenue data. (Raw data are relative changes to 2024)
+        """
+        for t, y in enumerate(range(self.start_year, self.end_year + 1)):
+            self.revenue[t] = self.df_deterministic_data.loc[y, 'TAX_AND_PROPERTY_INCOME'] if not np.isnan(self.df_deterministic_data.loc[y, 'TAX_AND_PROPERTY_INCOME']) else 0
 # ========================================================================================= #
 #                                   PROJECTION METHODS                                      #
 # ========================================================================================= #
@@ -687,102 +694,110 @@ class DsaModel:
     def _project_gdp(self):
         """
         Project nominal GDP.
-        """
+        """ 
+        # Project real growth and apply fiscal multiplier
+        if self.fiscal_multiplier_type == 'com': 
+            self._calculate_rgdp_com()
+        elif self.fiscal_multiplier_type == 'bruegel': 
+            self._calculate_rgdp_bruegel()
+        else : 
+            raise ValueError('Fiscal multiplier type not recognized')
+            
         # Apply adverse r-g scenario if specified
         if self.scenario == 'adverse_r_g': 
             self._apply_adverse_r_g()
 
-        # Project real GDP and apply fiscal multiplier effect
+        # Project nominal growth
+        self._calculate_ngdp()
+
+    def _calculate_rgdp_bruegel(self):
+        """
+        Calcualtes real GDP and real growth, assumes persistence in fiscal_multiplier effect leading to output gap closing in 3 years
+        """
         for t in range(1, self.projection_period):
-            if self.fiscal_multiplier_type == 'com': 
-                self._calculate_rgdp_com(t)
-            elif self.fiscal_multiplier_type == 'bruegel': 
-                self._calculate_rgdp_bruegel(t)
-            else : 
-                raise ValueError('Fiscal multiplier type not recognized')
-            self._calculate_ngdp(t)
+
+            # Fiscal multiplier effect from change in SPB relative to baseline
+            self.fiscal_multiplier_effect[t] = self.fiscal_multiplier * ((self.spb_bca[t] - self.spb_bca[t - 1]) - (self.spb_bl[t] - self.spb_bl[t - 1]))
+
+            # Add spillover effect to fiscal_multiplier effect if defined
+            if hasattr(self, 'fiscal_multiplier_spillover'): 
+                self.fiscal_multiplier_effect[t] += self.fiscal_multiplier_spillover[t]
+
+            # Calculate persistence term of multiplier effect
+            persistence_term = sum([self.fiscal_multiplier_effect[t - i] * (self.fiscal_multiplier_persistence - i) / self.fiscal_multiplier_persistence for i in range(1, self.fiscal_multiplier_persistence)])
+
+            # Fiscal multiplier effect on output gap
+            self.output_gap[t] = self.output_gap_bl[t] - self.fiscal_multiplier_effect[t] - persistence_term
+
+            # Real growth and real GDP
+            self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
+            self.rg[t] = (self.rgdp[t] - self.rgdp[t - 1]) / self.rgdp[t - 1] * 100
+
+    def _calculate_rgdp_com(self):
+        """
+        Calcualtes real GDP and real growth, assumes output gap closes in 3 years with 2/3 and 1/3 rule
+        """
+        for t in range(1, self.projection_period):
+
+            # Fiscal multiplier effect from change in SPB relative to baseline
+            self.fiscal_multiplier_effect[t] = self.fiscal_multiplier * ((self.spb_bca[t] - self.spb_bca[t - 1]) - (self.spb_bl[t] - self.spb_bl[t - 1]))
+
+            # Add spillover effect to fiscal_multiplier effect if defined
+            if hasattr(self, 'fiscal_multiplier_spillover'): 
+                self.fiscal_multiplier_effect[t] += self.fiscal_multiplier_spillover[t]
+
+            # Output gap
+            if t == self.adjustment_start: 
+                self.output_gap[t] = self.output_gap_bl[t] - self.fiscal_multiplier_effect[t]
+
+            elif t in range(self.adjustment_start + 1, self.adjustment_end + 1 ) and self.policy_change:
+                # self.output_gap[t] = (self.fiscal_multiplier_persistence - 1) / self.fiscal_multiplier_persistence * self.output_gap[t-1] - self.fiscal_multiplier_effect[t]
+                self.output_gap[t] = 2 / 3 * self.output_gap[t-1] - self.fiscal_multiplier_effect[t]
+            
+            elif t in range(self.adjustment_end + 1, self.adjustment_end + self.fiscal_multiplier_persistence + 1) and self.policy_change:
+                self.output_gap[t] = self.output_gap[t-1] - 1 / self.fiscal_multiplier_persistence * self.output_gap[self.adjustment_end]
+                    
+            # Real growth and real GDP
+            self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
+            self.rg[t] = (self.rgdp[t] - self.rgdp[t - 1]) / self.rgdp[t - 1] * 100
+
+    # def _apply_hysteresis_effect(self, t):
+    #     """
+    #     Apply hysteresis effect to potential GDP if defined after above steps
+    #     """            
+    #     for t in range(1, self.projection_period):
+    #         # Recompute potential GDP with hysteresis effect, ensure within bounds of rgdp
+    #         if self.spb_target > self.spb[self.adjustment_start - 1]:
+    #             self.rgdp_pot[t] = max(self.rgdp[t], self.rgdp_pot[t - 1] * (1 + (self.rg_pot[t-1] + self.hysteresis_effect * self.output_gap[t-1]) / 100))
+    #         else:
+    #             self.rgdp_pot[t] = min(self.rgdp[t], self.rgdp_pot[t - 1] * (1 + (self.rg_pot[t-1] + self.hysteresis_effect * self.output_gap[t-1]) / 100))
+
+    #         # Recalculate output gap
+    #         self.output_gap[t] = (self.rgdp[t] / self.rgdp_pot[t] - 1) * 100
 
     def _apply_adverse_r_g(self):
         """
         Applies adverse interest rate and growth conditions for adverse r-g scenario
         """
-        for t in range(self.adjustment_end + 1, self.projection_period):
+        for t in range(self.adjustment_end+1, self.projection_period):
 
             # Increase short and long term interest rates by 0.5
             self.i_st[t] += 0.5
             self.i_lt[t] += 0.5
 
             # Decrease real and potential growth by 0.5
-            self.rg[t] = self.rg_bl[t] - 0.5
+            self.rg[t] -= 0.5
             self.rgdp[t] = self.rgdp[t - 1] * (1 + (self.rg[t]) / 100)
-
-            # baseline output gap at adjustment end is zero, so we can use the actual growth values
-            self.rg_pot[t] = self.rg[t]
-            self.rgdp_pot[t] = self.rgdp[t]
-
-    def _calculate_rgdp_bruegel(self, t):
-        """
-        Calcualtes real GDP and real growth, assumes persistence in fiscal_multiplier effect leading to output gap closing in 3 years
-        """
-        # Fiscal multiplier effect from change in SPB relative to baseline
-        self.fiscal_multiplier_effect[t] = self.fiscal_multiplier * ((self.spb_bca[t] - self.spb_bca[t - 1]) - (self.spb_bl[t] - self.spb_bl[t - 1]))
-
-        # Add spillover effect to fiscal_multiplier effect if defined
-        if hasattr(self, 'fiscal_multiplier_spillover'): 
-            self.fiscal_multiplier_effect[t] += self.fiscal_multiplier_spillover[t]
-
-        # Calculate persistence term of multiplier effect
-        persistence_term = sum([self.fiscal_multiplier_effect[t - i] * (self.fiscal_multiplier_persistence - i) / self.fiscal_multiplier_persistence for i in range(1, self.fiscal_multiplier_persistence)])
-
-        # Fiscal multiplier effect on output gap
-        self.output_gap[t] = self.output_gap_bl[t] - self.fiscal_multiplier_effect[t] - persistence_term
-
-        # Real growth and real GDP
-        self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
-        self.rg[t] = (self.rgdp[t] - self.rgdp[t - 1]) / self.rgdp[t - 1] * 100
-
-    def _calculate_rgdp_com(self, t):
-        """
-        Calcualtes real GDP and real growth, assumes output gap closes in 3 years with 2/3 and 1/3 rule
-        """
-        # Fiscal multiplier effect from change in SPB relative to baseline
-        self.fiscal_multiplier_effect[t] = self.fiscal_multiplier * ((self.spb_bca[t] - self.spb_bca[t - 1]) - (self.spb_bl[t] - self.spb_bl[t - 1]))
-
-        # Add spillover effect to fiscal_multiplier effect if defined
-        if hasattr(self, 'fiscal_multiplier_spillover'): 
-            self.fiscal_multiplier_effect[t] += self.fiscal_multiplier_spillover[t]
-
-        # Output gap
-        if t == self.adjustment_start: 
-            self.output_gap[t] = self.output_gap_bl[t] - self.fiscal_multiplier_effect[t]
-
-        elif t in range(self.adjustment_start + 1, self.adjustment_end + 1 ) and self.policy_change:
-            # self.output_gap[t] = (self.fiscal_multiplier_persistence - 1) / self.fiscal_multiplier_persistence * self.output_gap[t-1] - self.fiscal_multiplier_effect[t]
-            self.output_gap[t] = 2 / 3 * self.output_gap[t-1] - self.fiscal_multiplier_effect[t]
-        
-        elif t in range(self.adjustment_end + 1, self.adjustment_end + self.fiscal_multiplier_persistence + 1) and self.policy_change:
-            self.output_gap[t] = self.output_gap[t-1] - 1 / self.fiscal_multiplier_persistence * self.output_gap[self.adjustment_end]
-                
-        # Real growth and real GDP
-        self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
-        self.rg[t] = (self.rgdp[t] - self.rgdp[t - 1]) / self.rgdp[t - 1] * 100
-
-    def _calculate_ngdp(self, t):
+            
+    def _calculate_ngdp(self):
         """
         Calcualtes nominal GDP and nominal growth
         """
-        # Before adjustment period, nominal growth is baseline
-        if t < self.adjustment_start:
-            self.ng[t] = self.ng_bl[t]
-            self.ngdp[t] = self.ngdp_bl[t]
-
-        # After adjustment period, nominal growth based on real growth and inflation
-        elif t >= self.adjustment_start:
-            self.ng[t] = (1 + self.rg[t] / 100) * (1 + self.pi[t] / 100) * 100 - 100
-
-            # project nominal GDP
-            self.ngdp[t] = self.ngdp[t - 1] * (1 + self.ng[t] / 100)
-
+        for t in range(self.adjustment_start, self.projection_period):
+                
+            # From adjustment start, nominal growth based on real growth and inflation
+                self.ng[t] = (1 + self.rg[t] / 100) * (1 + self.pi[t] / 100) * 100 - 100
+                self.ngdp[t] = self.ngdp[t - 1] * (1 + self.ng[t] / 100)
 
     def _project_stock_flow(self):
         """
@@ -843,18 +858,14 @@ class DsaModel:
         """
         for t in range(1, self.projection_period):
 
-            # Ageing cost adjustments are accounted for by spb adjustment during the adjustment period
-            if t <= self.adjustment_end:
-                self.spb[t] = self.spb_bca[t]
-
             # After adjustment period ageing costs affect the SPB for duration of "ageing_cost_period"
-            elif t > self.adjustment_end and t <= self.adjustment_end + self.ageing_cost_period:
-                self.ageing_component[t] = - ((self.ageing_cost[t] - self.pension_revenue[t]) - (self.ageing_cost[self.adjustment_end] - self.pension_revenue[self.adjustment_end]))
-                self.spb[t] = self.spb_bca[t] + self.ageing_component[t]
-
-            # After ageing cost period, SPB is baseline
-            elif t > self.adjustment_end + self.ageing_cost_period:
-                self.spb[t] = self.spb[t - 1]
+            if t > self.adjustment_end and t <= self.adjustment_end + self.ageing_cost_period:
+                self.ageing_component[t] = self.ageing_cost[t] - self.ageing_cost[self.adjustment_end]
+                # self.pension_revenue_component[t] = self.pension_revenue[t] - self.pension_revenue[self.adjustment_end]
+                # self.property_income_component[t] = self.property_income[t] - self.property_income[self.adjustment_end]
+                self.revenue_component[t] = self.revenue[t] - self.revenue[self.adjustment_end]
+                
+            self.spb[t] = self.spb_bca[t] - self.ageing_component[t] + self.revenue_component[t] #+ self.pension_revenue_component[t] + self.property_income_component[t]
 
             # Total SPB for calcualtion of structural deficit
             self.SPB[t] = self.spb[t] / 100 * self.ngdp[t]
@@ -864,16 +875,15 @@ class DsaModel:
 
     def _project_pb_from_spb(self):
         """
-        Project primary balance adjusted as sum of SPB, cyclical component, and property income component
+        Project primary balance adjusted as sum of SPB, cyclical component.
         """
         for t in range(self.projection_period):
 
             # Calculate components
             self.cyclical_component[t] = self.budget_balance_elasticity * self.output_gap[t]
-            self.property_income_component[t] = self.property_income[t] - self.property_income[self.adjustment_start - 1]
 
             # Calculate primary balance ratio as sum of components and total primary balance
-            self.pb[t] = self.spb[t] + self.cyclical_component[t] + self.property_income_component[t]
+            self.pb[t] = self.spb[t] + self.cyclical_component[t]
             self.PB[t] = self.pb[t] / 100 * self.ngdp[t]
 
     def _project_debt_ratio(self):
