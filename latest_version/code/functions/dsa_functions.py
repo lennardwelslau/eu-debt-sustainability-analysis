@@ -30,8 +30,7 @@ def run_dsa(
         stochastic_start_year=None, # start year of stochastic projection
         stochastic_period=5, # number of years for stochastic projection
         shock_frequency='quarterly', # frequency of shocks, 'quarterly' or 'annual'
-        estimation='normal', # estimation method for covariance matrix, 'normal' or 'var'
-        estimation_method='cholesky', # method for drawing shocks if estimation is 'var', 'cholesky' or 'bootstrap'
+        estimation='normal', # estimation method for covariance matrix, 'normal', 'var_cholesky' or 'var_bootstrap'
         fiscal_multiplier=0.75, # size of the fiscal multiplier
         bond_data=False, # Use bond level data for repayment profile,
         ):
@@ -61,7 +60,6 @@ def run_dsa(
                 stochastic_period=stochastic_period, # number of years for stochastic projection
                 shock_frequency=shock_frequency, # frequency of shocks, 'quarterly' or 'annual'
                 estimation=estimation, # estimation method for covariance matrix, 'normal' or 'var'
-                estimation_method=estimation_method, # method for drawing shocks if estimation is 'var', 'cholesky' or 'bootstrap'
                 fiscal_multiplier=fiscal_multiplier, # size of the fiscal multiplier
                 bond_data=bond_data, # Use bond level data for repayment profile
                 )

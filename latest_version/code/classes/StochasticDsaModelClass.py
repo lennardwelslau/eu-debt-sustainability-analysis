@@ -52,7 +52,6 @@ class StochasticDsaModel(DsaModel):
                 stochastic_period=5, # number of years for stochastic projection
                 shock_frequency='quarterly', # start year of stochastic simulation
                 estimation='normal', # estimation method for covariance matrix
-                estimation_method='cholesky', # method for drawing shocks from VAR model
                 fiscal_multiplier=0.75, 
                 fiscal_multiplier_persistence=3,
                 fiscal_multiplier_type='com',
@@ -77,7 +76,6 @@ class StochasticDsaModel(DsaModel):
         self.shock_frequency = shock_frequency
         self.shock_sample_start = shock_sample_start
         self.estimation = estimation
-        self.estimation_method = estimation_method
         if stochastic_start_year is None: 
             stochastic_start_year = adjustment_start_year + adjustment_period
         self.stochastic_start_year = stochastic_start_year
@@ -145,7 +143,7 @@ class StochasticDsaModel(DsaModel):
         # Draw shocks from a multivariate normal distribution or VAR model
         if self.estimation == 'normal': 
             self._draw_shocks_normal()
-        elif self.estimation == 'var': 
+        elif self.estimation in ['var_cholesky', 'var_bootstrap']: 
             self._draw_shocks_var()
 
         # Aggregate quarterly shocks to annual shocks
@@ -191,7 +189,7 @@ class StochasticDsaModel(DsaModel):
         """
         # Define sample for VAR model, exclude exr_eur_shock for EA countries and DNK
         ea_countries = ['AUT', 'BEL', 'BGR', 'DNK', 'HRV', 'CYP', 'EST', 'FIN', 'FRA', 'DEU', 'GRC', 'IRL', 'ITA', 'LVA', 'LTU', 'LUX', 'MLT', 'NLD', 'PRT', 'SVK', 'SVN', 'ESP']
-        var_sample = self.df_shocks 
+        var_sample = self.df_shocks.copy()
         if self.country in ea_countries: var_sample.drop(columns=['EXR_EUR'], inplace=True) 
         elif self.country == 'USA': var_sample.drop(columns=['EXR_USD'], inplace=True)
 
@@ -206,9 +204,9 @@ class StochasticDsaModel(DsaModel):
         residuals = self.var.resid.values
 
         # Use bootstrap sampling from the residuals or Cholesky decomposition of the covariance matrix
-        if self.estimation_method == 'bootstrap':
+        if self.estimation == 'var_bootstrap':
             residual_draws = residuals[np.random.choice(len(residuals), size=(self.N, self.draw_period), replace=True)]
-        if self.estimation_method == 'cholesky':
+        if self.estimation == 'var_cholesky':
             cov_matrix = np.cov(residuals.T)
             chol_matrix = np.linalg.cholesky(cov_matrix)
             residual_draws = np.random.randn(self.N, self.draw_period, residuals.shape[1]) @ chol_matrix.T
@@ -480,12 +478,18 @@ class StochasticDsaModel(DsaModel):
 #                              STOCHASTIC OPTIMIZATION METHODS                              # 
 # ========================================================================================= #
 
-    def find_spb_stochastic(self, prob_target=0.3, bounds=(-10, 10), print_update=False):
+    def find_spb_stochastic(self, 
+                            bounds=(-20, 20), 
+                            stochastic_criteria=['debt_explodes', 'debt_above_60'],
+                            print_update=False):
         """
         Find the structural primary balance that ensures the probability of the debt-to-GDP ratio exploding is equal to prob_target.
         """
         # Set parameters
         self.print_update = print_update
+        
+        if not hasattr(self, 'stochastic_criteria'):
+            self.stochastic_criteria = stochastic_criteria
         
         if not hasattr(self, 'edp_steps'):
            self.edp_steps = None
@@ -495,6 +499,9 @@ class StochasticDsaModel(DsaModel):
 
         if not hasattr(self, 'post_spb_steps'):
             self.post_spb_steps = None
+        
+        if not hasattr(self, 'prob_target'):
+            self.prob_target = 0.3
 
         #if self.country in ['DNK']: bounds = (-6,0) # Denmark's target function has large local minima for high values
         
@@ -516,7 +523,7 @@ class StochasticDsaModel(DsaModel):
             )
         
         # Optimize for both debt decline and debt remaining under 60 and choose the lower SPB
-        self.spb_target = self._stochastic_optimization(prob_target=prob_target, bounds=bounds)
+        self.spb_target = self._stochastic_optimization(bounds=bounds)
 
         # Project with optimal spb
         self.project(
@@ -529,7 +536,7 @@ class StochasticDsaModel(DsaModel):
 
         return self.spb_target
     
-    def _stochastic_optimization(self, prob_target, bounds):
+    def _stochastic_optimization(self, bounds):
         """
         Optimizes for SPB that ensures debt remains below 60% with probability prob_target.
         """
@@ -537,7 +544,6 @@ class StochasticDsaModel(DsaModel):
         self.simulate()
 
         # Set parameters
-        self.prob_target = prob_target
         self.spb_bounds = bounds
         self.stochastic_optimization_dict = {}
 
@@ -581,7 +587,14 @@ class StochasticDsaModel(DsaModel):
         self.stochastic_optimization_dict[spb_target]['prob_debt_above_60'] = self.prob_above_60
 
         # Optimize for more probable target    
-        min_prob = np.min([self.prob_explodes, self.prob_above_60])
+        if 'debt_explodes' in self.stochastic_criteria and 'debt_above_60' in self.stochastic_criteria:
+            min_prob = np.min([self.prob_explodes, self.prob_above_60])
+        elif 'debt_explodes' in self.stochastic_criteria:
+            min_prob = self.prob_explodes
+        elif 'debt_above_60' in self.stochastic_criteria:
+            min_prob = self.prob_above_60
+        else:
+            raise ValueError('Unknown stochastic criteria!')        
         
         # Penalty term to avoid local minima at upper bound
         penalty = np.max([0,spb_target/10]) if np.isclose(min_prob, 0) else 0
@@ -629,11 +642,17 @@ class StochasticDsaModel(DsaModel):
                          edp=True, 
                          debt_safeguard=True, 
                          deficit_resilience=True,
+                         stochastic=True,
                          print_results=True,
+                         stochastic_criteria=['debt_explodes', 'debt_above_60'],
                          save_df=False):
         """
         Find the structural primary balance that meets all criteria after deficit has been brought below 3% and debt safeguard is satisfied.
-        """       
+        """     
+
+        # Set parameters
+        self.stochastic_criteria = stochastic_criteria
+
         # Initiate spb_target and dataframe dictionary
         self.save_df = save_df
         self.spb_target_dict = {}
@@ -644,15 +663,15 @@ class StochasticDsaModel(DsaModel):
 
         # Run DSA and deficit criteria and project toughest under baseline assumptions
         self.project(spb_target=None, edp_steps=None) # clear projection
-        self._run_dsa()
+        self._run_dsa(stochastic=stochastic)
         self._get_binding()
 
         # Apply EDP
         if edp: 
             self._apply_edp()
-        elif self.ob[self.adjustment_start - 1] < -3:
-            self.edp_period = 0
-            self.edp_end = self.adjustment_start - 1
+        # elif self.ob[self.adjustment_start - 1] < -3:
+        #     self.edp_period = 0
+        #     self.edp_end = self.adjustment_start - 1
         else:
             self.edp_period = 0
             self.edp_end = self.adjustment_start - 2
@@ -693,7 +712,7 @@ class StochasticDsaModel(DsaModel):
         if self.save_df: 
             self.df_dict['binding'] = self.df(all=True)
 
-    def _run_dsa(self, criterion='all'):
+    def _run_dsa(self, stochastic=True, criterion='all'):
         """
         Run DSA for given criterion.
         """
@@ -715,14 +734,15 @@ class StochasticDsaModel(DsaModel):
                     raise
 
             # Run stochastic scenario, skip if not possible due to lack of data
-            try: 
-                self.find_spb_stochastic()
-                self.spb_target_dict['stochastic'] = self.spb_bca[self.adjustment_end]
-                self.pb_target_dict['stochastic'] = self.pb[self.adjustment_end]
-                if self.save_df: 
-                    self.df_dict['stochastic'] = self.df(all=True)
-            except:
-                pass
+            if stochastic == True:
+                try: 
+                    self.find_spb_stochastic()
+                    self.spb_target_dict['stochastic'] = self.spb_bca[self.adjustment_end]
+                    self.pb_target_dict['stochastic'] = self.pb[self.adjustment_end]
+                    if self.save_df: 
+                        self.df_dict['stochastic'] = self.df(all=True)
+                except:
+                    pass
 
         # If specific criterion given for EDP optimization, run only one optimization
         else:
@@ -839,7 +859,7 @@ class StochasticDsaModel(DsaModel):
             'shock frequency': 
             self.shock_frequency,
             'stochastic period': f"{self.stochastic_start_year}-{self.stochastic_start_year + self.stochastic_period}",
-            'estimation': f"{self.estimation} {'' if self.estimation == 'normal' else '(' + self.estimation_method + ')'}",
+            'estimation': f"{self.estimation}",
             'bond level data': 
             self.bond_data,
             'safeguards': f"{'EDP,' if edp else ''} {'debt,' if debt_safeguard else ''} {'deficit_resilience' if deficit_resilience else ''}"

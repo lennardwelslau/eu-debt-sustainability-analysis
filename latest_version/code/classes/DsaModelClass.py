@@ -72,6 +72,8 @@ class DsaModel:
         self.fiscal_multiplier_persistence = fiscal_multiplier_persistence  # persistence of fiscal multiplier
         self.fiscal_multiplier_type = fiscal_multiplier_type  # type of fiscal multiplier
         self.bond_data = bond_data  # True if bond level data is available
+        self.policy_change = False # Turns true if projected with spb target/steps
+        self.scenario = None # scenario parameter
 
         # Initiate model variables as numpy arrays
         nan_vars = [
@@ -497,6 +499,7 @@ class DsaModel:
         """
         for t, y in enumerate(range(self.start_year, self.end_year + 1)):
             self.revenue[t] = self.df_deterministic_data.loc[y, 'TAX_AND_PROPERTY_INCOME'] if not np.isnan(self.df_deterministic_data.loc[y, 'TAX_AND_PROPERTY_INCOME']) else 0
+            
 # ========================================================================================= #
 #                                   PROJECTION METHODS                                      #
 # ========================================================================================= #
@@ -683,11 +686,13 @@ class DsaModel:
         """
         Apply lower_spb scenario
         """
+        if not hasattr(self, 'lower_spb_shock'):
+            self.lower_spb_shock = 0.5
         # If 4-year adjustment period, spb_bca decreases by 0.5 for 2 years after adjustment period, if 7-year for 3 years
         lower_spb_adjustment_period = int(np.floor(self.adjustment_period / 2))
         for t in range(self.adjustment_end + 1, self.projection_period):
             if t <= self.adjustment_end + lower_spb_adjustment_period:
-                self.spb_bca[t] -= 0.5 / lower_spb_adjustment_period * (t - self.adjustment_end)
+                self.spb_bca[t] -= self.lower_spb_shock / lower_spb_adjustment_period * (t - self.adjustment_end)
             else:
                 self.spb_bca[t] = self.spb_bca[t - 1]
 
@@ -751,8 +756,8 @@ class DsaModel:
                 self.output_gap[t] = self.output_gap_bl[t] - self.fiscal_multiplier_effect[t]
 
             elif t in range(self.adjustment_start + 1, self.adjustment_end + 1 ) and self.policy_change:
-                # self.output_gap[t] = (self.fiscal_multiplier_persistence - 1) / self.fiscal_multiplier_persistence * self.output_gap[t-1] - self.fiscal_multiplier_effect[t]
-                self.output_gap[t] = 2 / 3 * self.output_gap[t-1] - self.fiscal_multiplier_effect[t]
+                self.output_gap[t] = (self.fiscal_multiplier_persistence - 1) / self.fiscal_multiplier_persistence * self.output_gap[t-1] - self.fiscal_multiplier_effect[t]
+                #self.output_gap[t] = 2 / 3 * self.output_gap[t-1] - self.fiscal_multiplier_effect[t]
             
             elif t in range(self.adjustment_end + 1, self.adjustment_end + self.fiscal_multiplier_persistence + 1) and self.policy_change:
                 self.output_gap[t] = self.output_gap[t-1] - 1 / self.fiscal_multiplier_persistence * self.output_gap[self.adjustment_end]
@@ -779,14 +784,17 @@ class DsaModel:
         """
         Applies adverse interest rate and growth conditions for adverse r-g scenario
         """
-        for t in range(self.adjustment_end+1, self.projection_period):
+        if not hasattr(self, 'adverse_r_g_shock'): 
+            self.adverse_r_g_shock = 0.5
 
+        for t in range(self.adjustment_end+1, self.projection_period):
+            
             # Increase short and long term interest rates by 0.5
-            self.i_st[t] += 0.5
-            self.i_lt[t] += 0.5
+            self.i_st[t] += self.adverse_r_g_shock
+            self.i_lt[t] += self.adverse_r_g_shock
 
             # Decrease real and potential growth by 0.5
-            self.rg[t] -= 0.5
+            self.rg[t] -= self.adverse_r_g_shock
             self.rgdp[t] = self.rgdp[t - 1] * (1 + (self.rg[t]) / 100)
             
     def _calculate_ngdp(self):
@@ -864,7 +872,12 @@ class DsaModel:
                 # self.pension_revenue_component[t] = self.pension_revenue[t] - self.pension_revenue[self.adjustment_end]
                 # self.property_income_component[t] = self.property_income[t] - self.property_income[self.adjustment_end]
                 self.revenue_component[t] = self.revenue[t] - self.revenue[self.adjustment_end]
-                
+            elif t > self.adjustment_end + self.ageing_cost_period:
+                self.ageing_component[t] = self.ageing_component[t-1]
+                # self.pension_revenue_component[t] = self.pension_revenue_component[t-1]
+                # self.property_income_component[t] = self.property_income_component[t-1]   
+                self.revenue_component[t] = self.revenue_component[t-1]
+
             self.spb[t] = self.spb_bca[t] - self.ageing_component[t] + self.revenue_component[t] #+ self.pension_revenue_component[t] + self.property_income_component[t]
 
             # Total SPB for calcualtion of structural deficit
@@ -910,15 +923,17 @@ class DsaModel:
         """
         Adjust interest rates for financial stress scenario
         """
+        if not hasattr(self, 'financial_stress_shock'):
+            self.financial_stress_shock = 1
         # Adjust market rates for high debt countries financial stress scenario
         if self.d[self.adjustment_end] > 90:
-            self.i_st[t] += (1 + (self.d[self.adjustment_end] - 90) * 0.06)
-            self.i_lt[t] += (1 + (self.d[self.adjustment_end] - 90) * 0.06)
+            self.i_st[t] += (self.financial_stress_shock + (self.d[self.adjustment_end] - 90) * 0.06)
+            self.i_lt[t] += (self.financial_stress_shock + (self.d[self.adjustment_end] - 90) * 0.06)
 
         # Adjust market rates for low debt countries financial stress scenario
         else:
-            self.i_st[t] += 1
-            self.i_lt[t] += 1
+            self.i_st[t] += self.financial_stress_shock
+            self.i_lt[t] += self.financial_stress_shock
 
     def _calculate_iir(self, t):
         """
