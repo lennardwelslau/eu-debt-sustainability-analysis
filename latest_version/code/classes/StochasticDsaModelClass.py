@@ -19,7 +19,7 @@
 # For comments and suggestions please contact lennard.welslau[at]gmail[dot]com
 #
 # Author: Lennard Welslau
-# Updated: 2024-06-01
+# Updated: 2024-12-01
 # ========================================================================================= #
 
 # Import libraries and modules
@@ -27,9 +27,8 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
-sns.set_style('whitegrid')
-sns.set_palette('colorblind')
+plt.rcParams.update({'axes.grid':True,'grid.color':'black','grid.alpha':'0.25','grid.linestyle':'--'})
+plt.rcParams.update({'font.size': 14})
 from scipy.optimize import minimize_scalar
 from statsmodels.tsa.api import VAR
 from numba import jit
@@ -50,7 +49,7 @@ class StochasticDsaModel(DsaModel):
                 shock_sample_start=2000, # start year of shock sample
                 stochastic_start_year=None, # start year of stochastic projection
                 stochastic_period=5, # number of years for stochastic projection
-                shock_frequency='quarterly', # start year of stochastic simulation
+                shock_frequency='quarterly', # frequency of shock data
                 estimation='normal', # estimation method for covariance matrix
                 fiscal_multiplier=0.75, 
                 fiscal_multiplier_persistence=3,
@@ -110,7 +109,7 @@ class StochasticDsaModel(DsaModel):
         if self.shock_frequency == 'annual':
             self.df_shocks = pd.read_csv(self._base_dir + 'data/InputData/stochastic_data_annual.csv').set_index('YEAR')
             self.df_shocks = self.df_shocks.loc[self.df_shocks['COUNTRY'] == self.country]
-            self.df_shocks.index = pd.PeriodIndex(self.df_shocks.index, freq='A')
+            self.df_shocks.index = pd.PeriodIndex(self.df_shocks.index, freq='Y')
 
         # Subset shock period and order variables
         self.df_shocks = self.df_shocks.loc[self.df_shocks.index.astype(str).str[:4].astype(int) >= self.shock_sample_start]
@@ -420,7 +419,7 @@ class StochasticDsaModel(DsaModel):
 #                                AUXILIARY METHODS                                          #
 # ========================================================================================= #
 
-    def fanchart(self, var='d', save_as=False, show=True):
+    def fanchart(self, var='d', save_as=False, show=True, xlim=(2023, 2040)):
         """
         Plot a fanchart of the simulated debt-to-GDP ratio. And save the figure if save_as is specified.
         """
@@ -440,15 +439,12 @@ class StochasticDsaModel(DsaModel):
         # Create array of years and baseline debt-to-GDP ratio
         years = np.arange(self.start_year, self.end_year+1)
 
-        # Set color pallette
-        fanchart_palette = sns.color_palette("Blues")
-
         # Plot the results using fill between
         fig, ax = plt.subplots(figsize=(10, 6))
-        ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[10], self.pcts_dict[90], color=fanchart_palette[0], label='10th-90th percentile')
-        ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[20], self.pcts_dict[80], color=fanchart_palette[1], label='20th-80th percentile')
-        ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[30], self.pcts_dict[70], color=fanchart_palette[2], label='30th-70th percentile')
-        ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[40], self.pcts_dict[60], color=fanchart_palette[3], label='40th-60th percentile')
+        ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[10], self.pcts_dict[90], color='dodgerblue', edgecolor=None, alpha=0.2, label='10th-90th percentile')
+        ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[20], self.pcts_dict[80], color='dodgerblue', edgecolor=None, alpha=0.3, label='20th-80th percentile')
+        ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[30], self.pcts_dict[70], color='dodgerblue', edgecolor=None, alpha=0.4, label='30th-70th percentile')
+        ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[40], self.pcts_dict[60], color='dodgerblue', edgecolor=None, alpha=0.7, label='40th-60th percentile')
         ax.plot(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[50], alpha=1, ls='-', color='black', label='Median')
         ax.plot(years, bl_var, ls='--', color='red', label='Baseline')
 
@@ -458,6 +454,7 @@ class StochasticDsaModel(DsaModel):
         ylabel = 'Debt (percent of GDP)' if var == 'd' else var
         ax.set_ylabel(ylabel)
         ax.set_title(f'{self.stochastic_period}-year fanchart for {self.country} (adjustment {self.adjustment_start_year}-{self.adjustment_end_year})')
+        ax.set_xlim(xlim[0], xlim[1])
 
         # Saveplot data in a dataframe if self.save_df is specified
         self.df_fanchart = pd.DataFrame({'year': years, 'baseline': bl_var})
@@ -481,7 +478,8 @@ class StochasticDsaModel(DsaModel):
     def find_spb_stochastic(self, 
                             bounds=(-20, 20), 
                             stochastic_criteria=['debt_explodes', 'debt_above_60'],
-                            print_update=False):
+                            print_update=False,
+                            prob_target=None):
         """
         Find the structural primary balance that ensures the probability of the debt-to-GDP ratio exploding is equal to prob_target.
         """
@@ -507,18 +505,12 @@ class StochasticDsaModel(DsaModel):
         
         self.stochastic_optimization_dict = {}
 
-        # Set initial adjustment steps if predefined, this is needed for optimization of only selected steps
-        if hasattr(self, 'predefined_spb_steps'):
-            initital_spb_steps = np.nan_to_num(self.predefined_spb_steps)
-        else:
-            initital_spb_steps = None
 
         # Initial projection
         self.project(
             edp_steps=self.edp_steps,
             deficit_resilience_steps=self.deficit_resilience_steps,
             post_spb_steps=self.post_spb_steps,
-            spb_steps=initital_spb_steps,
             scenario=None
             )
         
@@ -731,7 +723,7 @@ class StochasticDsaModel(DsaModel):
                     if self.save_df:
                         self.df_dict[deterministic_criterion] = self.df(all=True)
                 except:
-                    raise
+                    raise ValueError(f'{deterministic_criterion} did not converge for {self.country}')
 
             # Run stochastic scenario, skip if not possible due to lack of data
             if stochastic == True:
@@ -774,9 +766,9 @@ class StochasticDsaModel(DsaModel):
         """
         # Check if EDP binding, run DSA for periods after EDP and project new path under baseline assumptions
         self.find_edp(spb_target=self.binding_spb_target)
+
         if not np.all([np.isnan(self.edp_steps)]) and np.any([self.edp_steps >= self.spb_steps - 1e-8]):
             self.edp_binding = True 
-            print(self.edp_steps)
             self._run_dsa(criterion=self.binding_criterion)
             self.project(
                 spb_target=self.binding_spb_target, 
@@ -797,6 +789,7 @@ class StochasticDsaModel(DsaModel):
 
         if hasattr(self, 'predefined_spb_steps'):
             debt_safeguard_start = max(self.adjustment_start + len(self.predefined_spb_steps) - 1, self.edp_end + 1)
+
         else:
             debt_safeguard_start = self.edp_end + 1
 
@@ -874,13 +867,13 @@ class StochasticDsaModel(DsaModel):
         }
 
         # Helper function to split steps into chunks and name them based on ranges
-        def split_steps(key, steps, chunk_size=7):
+        def split_steps(key, steps, chunk_size=8):
             for i in range(0, len(steps), chunk_size):
                 part_key = f"{key} ({i + 1}-{min(i + chunk_size, len(steps))})"
                 binding_params[part_key] = np.array2string(steps[i:i + chunk_size], precision=3, separator=', ').replace('[', '').replace(']', '')
 
         # Check for adjustment period and split steps if necessary
-        if self.adjustment_period > 7:
+        if self.adjustment_period > 8:
             del binding_params['spb_steps']
             split_steps('spb_steps', self.spb_steps)
             if 'edp_steps' in self.binding_parameter_dict:

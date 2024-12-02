@@ -20,29 +20,28 @@
 # For comments and suggestions please contact lennard.welslau[at]gmail[dot]com
 #
 # Author: Lennard Welslau
-# Updated: 2024-06-01
+# Updated: 2024-12-01
 #
 # ========================================================================================= #
 
 # Import libraries and modules
 import os
-import seaborn as sns
 import matplotlib.pyplot as plt
+plt.rcParams.update({'axes.grid':True,'grid.color':'black','grid.alpha':'0.25','grid.linestyle':'--'})
+plt.rcParams.update({'font.size': 14})
 import pandas as pd
 import numpy as np
-from scipy.optimize import curve_fit
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
-sns.set_style('whitegrid')
-sns.set_palette('colorblind')
+
 
 
 class DsaModel:
 
-# ========================================================================================= #
-#                                   INIITIALIZE MODEL                                       #
-# ========================================================================================= #
-    
+    # ========================================================================================= #
+    #                                   INIITIALIZE MODEL                                       #
+    # ========================================================================================= #
+        
     def __init__(
             self,
             country,  # ISO code of country
@@ -53,7 +52,7 @@ class DsaModel:
             ageing_cost_period=10,  # number of years for ageing cost adjustment after adjustment period
             fiscal_multiplier=0.75, # fiscal multiplier for fiscal adjustment
             fiscal_multiplier_persistence=3, # persistence of fiscal multiplier in years
-            fiscal_multiplier_type='com', # type of fiscal multiplier, commission or bruegel version 
+            fiscal_multiplier_type='com', # type of fiscal multiplier, commission or pers version 
             bond_data=False, # Use bond level data for repayment profile
         ):
 
@@ -159,9 +158,9 @@ class DsaModel:
         # Clean data
         self._clean_data()
 
-# ========================================================================================= #
-#                               DATA METHODS (INTERNAL)                                     #
-# ========================================================================================= #
+    # ========================================================================================= #
+    #                               DATA METHODS (INTERNAL)                                     #
+    # ========================================================================================= #
 
     def _clean_data(self):
         """
@@ -194,7 +193,7 @@ class DsaModel:
         """
         # Set base directory relative to code folder
         self._base_dir = '../' * (os.getcwd().split(os.sep)[::-1].index('code')+1)
-        self.df_deterministic_data = pd.read_csv(self._base_dir + 'data/InputData/deterministic_data.csv') 
+        self.df_deterministic_data = pd.read_csv(self._base_dir + 'data/InputData/deterministic_data_november.csv') 
         self.df_deterministic_data = self.df_deterministic_data.loc[self.df_deterministic_data['COUNTRY'] == self.country].set_index('YEAR').iloc[:,1:]
 
     def _clean_rgdp_pot(self):
@@ -324,7 +323,7 @@ class DsaModel:
         Clean institutional debt data.
         """
         # Set to zero if missing
-        self.df_deterministic_data['ESM_REPAYMENT'].fillna(0, inplace=True)
+        self.df_deterministic_data['ESM_REPAYMENT'] = self.df_deterministic_data['ESM_REPAYMENT'].fillna(0)
 
         # Calculate initial value of institutional debt 
         self.D_lt_esm[0] = self.df_deterministic_data['ESM_REPAYMENT'].sum()
@@ -499,10 +498,10 @@ class DsaModel:
         """
         for t, y in enumerate(range(self.start_year, self.end_year + 1)):
             self.revenue[t] = self.df_deterministic_data.loc[y, 'TAX_AND_PROPERTY_INCOME'] if not np.isnan(self.df_deterministic_data.loc[y, 'TAX_AND_PROPERTY_INCOME']) else 0
-            
-# ========================================================================================= #
-#                                   PROJECTION METHODS                                      #
-# ========================================================================================= #
+    
+    # ========================================================================================= #
+    #                                   PROJECTION METHODS                                      #
+    # ========================================================================================= #
 
     def project(self,
                 spb_target=None,
@@ -537,7 +536,6 @@ class DsaModel:
         """
         Reset starting values for projection to avoid cumulative change from scenario application.
         """
-        
         # Reset starting values for market rates
         self.i_st = np.copy(self.i_st_bl)
         self.i_lt = np.copy(self.i_lt_bl)
@@ -575,11 +573,12 @@ class DsaModel:
                 and spb_target is not None):
             # If adjustment steps are predifined, adjust only non-nan values
             if hasattr(self, 'predefined_spb_steps'):
-                self.spb_steps = np.copy(self.predefined_spb_steps)
-                last_non_nan = np.where(~np.isnan(self.predefined_spb_steps))[0][-1]
-                num_steps = self.adjustment_period - (last_non_nan + 1)
-                step_size = (spb_target - self.spb_bca[self.adjustment_start+last_non_nan]) / num_steps
-                self.spb_steps[last_non_nan+1:] = np.full(num_steps, step_size)
+                self.spb_steps = np.full((self.adjustment_period,), np.nan, dtype=np.float64)
+                num_predefined_steps = len(self.predefined_spb_steps)
+                self.spb_steps[:num_predefined_steps] = np.copy(self.predefined_spb_steps)
+                num_steps = self.adjustment_period - num_predefined_steps
+                step_size = (spb_target - self.spb_bca[self.adjustment_start + num_predefined_steps - 1]) / num_steps
+                self.spb_steps[num_predefined_steps:] = np.full(num_steps, step_size)
             else:
                 self.spb_steps = np.full((self.adjustment_period,), (self.spb_target - self.spb_bca[self.adjustment_start - 1]) / self.adjustment_period, dtype=np.float64)
         elif (spb_steps is None
@@ -703,8 +702,8 @@ class DsaModel:
         # Project real growth and apply fiscal multiplier
         if self.fiscal_multiplier_type == 'com': 
             self._calculate_rgdp_com()
-        elif self.fiscal_multiplier_type == 'bruegel': 
-            self._calculate_rgdp_bruegel()
+        elif self.fiscal_multiplier_type == 'pers': 
+            self._calculate_rgdp_pers()
         else : 
             raise ValueError('Fiscal multiplier type not recognized')
             
@@ -715,7 +714,7 @@ class DsaModel:
         # Project nominal growth
         self._calculate_ngdp()
 
-    def _calculate_rgdp_bruegel(self):
+    def _calculate_rgdp_pers(self):
         """
         Calcualtes real GDP and real growth, assumes persistence in fiscal_multiplier effect leading to output gap closing in 3 years
         """
@@ -766,20 +765,6 @@ class DsaModel:
             self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
             self.rg[t] = (self.rgdp[t] - self.rgdp[t - 1]) / self.rgdp[t - 1] * 100
 
-    # def _apply_hysteresis_effect(self, t):
-    #     """
-    #     Apply hysteresis effect to potential GDP if defined after above steps
-    #     """            
-    #     for t in range(1, self.projection_period):
-    #         # Recompute potential GDP with hysteresis effect, ensure within bounds of rgdp
-    #         if self.spb_target > self.spb[self.adjustment_start - 1]:
-    #             self.rgdp_pot[t] = max(self.rgdp[t], self.rgdp_pot[t - 1] * (1 + (self.rg_pot[t-1] + self.hysteresis_effect * self.output_gap[t-1]) / 100))
-    #         else:
-    #             self.rgdp_pot[t] = min(self.rgdp[t], self.rgdp_pot[t - 1] * (1 + (self.rg_pot[t-1] + self.hysteresis_effect * self.output_gap[t-1]) / 100))
-
-    #         # Recalculate output gap
-    #         self.output_gap[t] = (self.rgdp[t] / self.rgdp_pot[t] - 1) * 100
-
     def _apply_adverse_r_g(self):
         """
         Applies adverse interest rate and growth conditions for adverse r-g scenario
@@ -814,8 +799,8 @@ class DsaModel:
         """
         for t in range(self.projection_period):
 
-            # For Luxembourg, Finland stock flow is extended beyond T+2 using pension balance ratio
-            if self.country in ['LUX', 'FIN']:
+            # For Luxembourg and Finland stock flow is extended beyond T+2 using pension balance ratio
+            if self.country in ['LUX']: #, include FInland here if using Commission assumptions
                 
                 if t < 3:
                     self.sf[t] = self.SF[t] / self.ngdp[t] * 100
@@ -824,13 +809,22 @@ class DsaModel:
                 if t >= 3 and t <= 10:
                     self.sf[t] = self.pension_balance[t]
 
-                # For Finland linearly interpolate to 0 from T+11 to T+20
+                # Commission assumptions for Finland linearly interpolate to 0 from T+11 to T+20
                 elif self.country == 'FIN' and t > 10 and t <= 20:
                     self.sf[t] = self.sf[10] - (t - 10) * self.sf[10] / 10
 
                 # For Luxembourg, linearly interpolate to 0 from T+11 to T+24
                 elif self.country == 'LUX' and t > 10 and t <= 24:
                     self.sf[t] = self.sf[10] - (t - 10) * self.sf[10] / 14
+            
+            # updated sf for Finland based on their 2024 MTFP numbers, comment out if using Commission assumptions
+            elif self.country == 'FIN':
+                sf_fin = {
+                    2024: 2.5, 2025: 1.3, 2026: 1.7, 2027: 1.4, 2028: 1.4, 2029: 1.0, 2030: 1.1, 2031: 1.5, 2032: 1.5, 
+                    2033: 1.4, 2034: 1.2, 2035: 1.1, 2036: 0.9, 2037: 0.8, 2038: 0.6, 2039: 0.5, 2040: 0.3, 2041: 0.2
+                }
+                if t in range(2024-self.start_year,len(sf_fin)+1):
+                    self.sf[t] = sf_fin[t+self.start_year]
 
             # For Greece stock-flow is based on deferal of ESM/EFSF interest payments
             elif self.country == 'GRC':
@@ -1027,9 +1021,9 @@ class DsaModel:
             - self.pb[t] + self.sf[t], 0
         ])
         
-# ========================================================================================= #
-#                               OPTIMIZATION METHODS                                        #
-# ========================================================================================= #
+    # ========================================================================================= #
+    #                               OPTIMIZATION METHODS                                        #
+    # ========================================================================================= #
 
     def find_edp(self, spb_target=None):
         """
@@ -1114,11 +1108,14 @@ class DsaModel:
                     spb_target=self.spb_target,
                     edp_steps=self.edp_steps
                 )
-                self._save_edp_period()
 
             # If sb adjustment reaches min. 0.5, move to next period
             if self.sb[self.adjustment_start + self.edp_sb_index] - self.sb[self.adjustment_start + self.edp_sb_index - 1] >= 0.5:
+
+                # set edp step to spb step in this period to ensure EDP recorded even in cases where step exceeds 0.5
+                self.edp_steps[self.edp_sb_index] = self.spb_steps[self.edp_sb_index]
                 self.edp_sb_index += 1
+                self._save_edp_period()
 
     def _calculate_edp_end(self, spb_target):
         """
@@ -1179,21 +1176,12 @@ class DsaModel:
             else:
                 self.edp_steps = None
 
-        # If predefined adjustment steps are specified, project with them 
-        if hasattr(self, 'predefined_spb_steps'):
-
-            self.project(
-                edp_steps=self.edp_steps,
-                spb_steps=np.nan_to_num(self.predefined_spb_steps),
-                scenario=self.scenario
-            )
-
         # Run deterministic optimization
         return self._deterministic_optimization(criterion=criterion, bounds=bounds, steps=steps)
 
     def _deterministic_optimization(self, criterion, bounds, steps):
         """
-        Main loop of optimizer for debt safeguard
+        Main loop of optimizer 
         """
         # If debt safeguard and EDP lasts until penultimate adjustment year, debt safeguard satisfied by default
         if (criterion == 'debt_safeguard'
@@ -1253,7 +1241,7 @@ class DsaModel:
 
     def _get_spb_steps(self, criterion, spb_target):
         """
-        Get adjustment steps for debt safeguard after EDP
+        Get adjustment steps 
         """
         # If debt safeguard, apply adjustment to period after EDP
         if criterion == 'debt_safeguard':
@@ -1265,11 +1253,11 @@ class DsaModel:
 
         # If adjustment steps are predifined, use them
         if hasattr(self, 'predefined_spb_steps'):
-            self.spb_steps = np.copy(self.predefined_spb_steps)
-            last_non_nan = np.where(~np.isnan(self.predefined_spb_steps))[0][-1]
-            num_steps = self.adjustment_period - (last_non_nan + 1)
-            step_size = (spb_target - self.spb_bca[self.adjustment_start+last_non_nan]) / num_steps
-            self.spb_steps[last_non_nan+1:] = np.full(num_steps, step_size)
+            num_predefined_steps = len(self.predefined_spb_steps)
+            self.spb_steps[:num_predefined_steps] = np.copy(self.predefined_spb_steps)
+            num_steps = self.adjustment_period - num_predefined_steps
+            step_size = (spb_target - self.spb_bca[self.adjustment_start + num_predefined_steps - 1]) / num_steps
+            self.spb_steps[num_predefined_steps:] = np.full(num_steps, step_size)
 
         # Otherwise apply adjustment to all periods
         else:
@@ -1314,6 +1302,7 @@ class DsaModel:
 
         if hasattr(self, 'predefined_spb_steps'):
             debt_safeguard_start = max(self.adjustment_start + len(self.predefined_spb_steps) - 1, self.edp_end + 1)
+            
         else:
             debt_safeguard_start = self.edp_end + 1
 
@@ -1368,9 +1357,9 @@ class DsaModel:
                         deficit_resilience_steps=self.deficit_resilience_steps
                     )
     
-# ========================================================================================= #
-#                                   AUXILIARY METHODS                                       #
-# ========================================================================================= #
+    # ========================================================================================= #
+    #                                   AUXILIARY METHODS                                       #
+    # ========================================================================================= #
 
     def df(self, *vars, all=False):
         """

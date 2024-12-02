@@ -17,7 +17,7 @@ This repository contains Python code for the replication of the European Commiss
 External packages used include numpy, pandas, matplotlib, scipy, and numba. For comments and suggestions please contact lennard.welslau[at]gmail[dot]com.
 
 Author: Lennard Welslau
-Last update: 01 June 2024
+Last update: 01 December 2024
 
 ## Methodology
 
