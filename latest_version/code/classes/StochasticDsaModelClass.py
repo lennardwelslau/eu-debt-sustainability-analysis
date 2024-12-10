@@ -666,7 +666,7 @@ class StochasticDsaModel(DsaModel):
         #     self.edp_end = self.adjustment_start - 1
         else:
             self.edp_period = 0
-            self.edp_end = self.adjustment_start - 2
+            self.edp_end = self.adjustment_start - 2 # equals 2023, year before the reference year (2024), meaning the debt safeguard is applied from the first adjustment year (2025)
         
         # Apply debt safeguard
         if debt_safeguard: 

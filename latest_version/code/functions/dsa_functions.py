@@ -51,8 +51,8 @@ def run_dsa(
         
         if edp_countries:
             edp = True if country in edp_countries else False
+            print(f'EDP {country} {edp}')
         for adjustment_period in adjustment_periods:
-            debt_safeguard_used = debt_safeguard if country != 'AUT' else False
             dsa = StochasticDsaModel(
                 country=country, 
                 adjustment_period=adjustment_period,
@@ -80,6 +80,7 @@ def run_dsa(
 
             # If stochastic_only is False, run full DSA with deterministic and stochastic projection
             else:
+                print(edp)
                 dsa.find_spb_binding(
                     save_df=True, 
                     edp=edp, 
