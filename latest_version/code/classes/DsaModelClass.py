@@ -169,7 +169,7 @@ class DsaModel:
         self._load_input_data()
         self._clean_rgdp_pot()
         self._clean_rgdp()
-        self._calculate_output_gap()
+        self._calc_output_gap()
         self._clean_inflation()
         self._clean_ngdp()
         self._clean_debt()
@@ -234,7 +234,7 @@ class DsaModel:
         self.rg = np.copy(self.rg_bl)
         self.rgdp = np.copy(self.rgdp_bl)
 
-    def _calculate_output_gap(self):
+    def _calc_output_gap(self):
         """
         Calculate the Output gap.
         """ 
@@ -701,9 +701,9 @@ class DsaModel:
         """ 
         # Project real growth and apply fiscal multiplier
         if self.fiscal_multiplier_type == 'com': 
-            self._calculate_rgdp_com()
+            self._calc_rgdp_com()
         elif self.fiscal_multiplier_type == 'pers': 
-            self._calculate_rgdp_pers()
+            self._calc_rgdp_pers()
         else : 
             raise ValueError('Fiscal multiplier type not recognized')
             
@@ -712,11 +712,11 @@ class DsaModel:
             self._apply_adverse_r_g()
 
         # Project nominal growth
-        self._calculate_ngdp()
+        self._calc_ngdp()
 
-    def _calculate_rgdp_pers(self):
+    def _calc_rgdp_pers(self):
         """
-        Calcualtes real GDP and real growth, assumes persistence in fiscal_multiplier effect leading to output gap closing in 3 years
+        Calculates real GDP and real growth, assumes persistence in fiscal_multiplier effect leading to output gap closing in 3 years
         """
         for t in range(1, self.projection_period):
 
@@ -737,9 +737,9 @@ class DsaModel:
             self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
             self.rg[t] = (self.rgdp[t] - self.rgdp[t - 1]) / self.rgdp[t - 1] * 100
 
-    def _calculate_rgdp_com(self):
+    def _calc_rgdp_com(self):
         """
-        Calcualtes real GDP and real growth, assumes output gap closes in 3 years with 2/3 and 1/3 rule
+        Calculates real GDP and real growth, assumes output gap closes in 3 years with 2/3 and 1/3 rule
         """
         for t in range(1, self.projection_period):
 
@@ -782,9 +782,9 @@ class DsaModel:
             self.rg[t] -= self.adverse_r_g_shock
             self.rgdp[t] = self.rgdp[t - 1] * (1 + (self.rg[t]) / 100)
             
-    def _calculate_ngdp(self):
+    def _calc_ngdp(self):
         """
-        Calcualtes nominal GDP and nominal growth
+        Calculates nominal GDP and nominal growth
         """
         for t in range(self.adjustment_start, self.projection_period):
                 
@@ -904,14 +904,14 @@ class DsaModel:
                 self._apply_financial_stress(t)
 
             # Calculate implicit interest rate, interestst, repayments, gross financing needs, debt stock, overall balance, and debt ratio
-            self._calculate_iir(t)
-            self._calculate_interest(t)
-            self._calculate_repayment(t)
-            self._calculate_gfn(t)
-            self._calculate_debt_stock(t)
+            self._calc_iir(t)
+            self._calc_interest(t)
+            self._calc_repayment(t)
+            self._calc_gfn(t)
+            self._calc_debt_stock(t)
             if t >= self.adjustment_start: # We keep input data for 2024
-                self._calculate_balance(t)
-                self._calculate_debt_ratio(t)
+                self._calc_balance(t)
+                self._calc_debt_ratio(t)
 
     def _apply_financial_stress(self, t):
         """
@@ -929,7 +929,7 @@ class DsaModel:
             self.i_st[t] += self.financial_stress_shock
             self.i_lt[t] += self.financial_stress_shock
 
-    def _calculate_iir(self, t):
+    def _calc_iir(self, t):
         """
         Calculate implicit interest rate
         """
@@ -952,7 +952,7 @@ class DsaModel:
             if iir[t] < 0 or iir[t] > 10 or np.isnan(iir[t]):
                 iir[t] = iir[t - 1]
 
-    def _calculate_interest(self, t):
+    def _calc_interest(self, t):
         """
         Calculate interest payments on newly issued debt
         """
@@ -961,7 +961,7 @@ class DsaModel:
         self.interest[t] = self.interest_st[t] + self.interest_lt[t]  # interest payments on newly issued debt and outstanding legacy debt
         self.interest_ratio[t] = self.interest[t] / self.ngdp[t] * 100
 
-    def _calculate_repayment(self, t):
+    def _calc_repayment(self, t):
         """
         Calculate repayment of newly issued debt
         """
@@ -978,13 +978,13 @@ class DsaModel:
         # Calculate total repayment
         self.repayment[t] = self.repayment_st[t] + self.repayment_lt[t] + self.repayment_lt_bond[t] + self.repayment_lt_esm[t]
 
-    def _calculate_gfn(self, t):
+    def _calc_gfn(self, t):
         """
         Calculate gross financing needs
         """
         self.GFN[t] = np.max([self.interest[t] + self.repayment[t] - self.PB[t] + self.SF[t], 0])
 
-    def _calculate_debt_stock(self, t):
+    def _calc_debt_stock(self, t):
         """
         Calculate new debt stock and distribution of new short and long-term issuance
         """
@@ -1001,7 +1001,7 @@ class DsaModel:
         self.D_new_lt[t] = (1 - D_issuance_share_st) * self.GFN[t]
         self.D_lt[t] = np.max([self.D_lt[t - 1] - self.repayment_lt[t] - self.repayment_lt_bond[t] + self.D_new_lt[t] , 0])
 
-    def _calculate_balance(self, t):
+    def _calc_balance(self, t):
         """
         Calculate overall balance and structural fiscal balance
         """
@@ -1010,7 +1010,7 @@ class DsaModel:
         self.ob[t] = self.OB[t] / self.ngdp[t] * 100 # overall balance as share of NGDP
         self.sb[t] = self.SB[t] / self.ngdp[t] * 100 # structural balance as share of NGDP
 
-    def _calculate_debt_ratio(self, t):
+    def _calc_debt_ratio(self, t):
         """
         Calculate debt ratio (zero floor)
         """
@@ -1047,9 +1047,9 @@ class DsaModel:
             self.edp_sb_index = 3
 
             # Calculate EDP adjustment steps for spb, sb, and final periods
-            self._calculate_edp_spb()
-            self._calculate_edp_sb()
-            self._calculate_edp_end(spb_target=spb_target)
+            self._calc_edp_spb()
+            self._calc_edp_sb()
+            self._calc_edp_end(spb_target=spb_target)
 
         # If excessive deficit in year before adjustment start, set edp_end to year before adjustment start
         elif self.ob[self.adjustment_start - 1] < self.edp_target:
@@ -1068,7 +1068,7 @@ class DsaModel:
         self.edp_period = np.where(~np.isnan(self.edp_steps))[0][-1] + 1
         self.edp_end = self.adjustment_start + self.edp_period - 1        
 
-    def _calculate_edp_spb(self):
+    def _calc_edp_spb(self):
         """
         Calculate EDP adjustment steps ensuring minimum strucutral primary balance adjustment
         """
@@ -1087,7 +1087,7 @@ class DsaModel:
             self.edp_spb_index += 1
             self._save_edp_period()
 
-    def _calculate_edp_sb(self):
+    def _calc_edp_sb(self):
         """
         Calculate EDP adjustment steps ensuring minimum strucutral balance adjustment
         """
@@ -1117,7 +1117,7 @@ class DsaModel:
                 self.edp_sb_index += 1
                 self._save_edp_period()
 
-    def _calculate_edp_end(self, spb_target):
+    def _calc_edp_end(self, spb_target):
         """
         Calculate EDP adjustment steps or SPB target ensuring deficit below 3% at adjustment end
         """
@@ -1128,7 +1128,7 @@ class DsaModel:
                 # Aim for linear adjustment path by increasing smallest EDP steps first
                 min_edp_steps = np.min(self.edp_steps[~np.isnan(self.edp_steps)])
                 min_edp_indices = np.where(self.edp_steps == min_edp_steps)[0]
-                self.edp_steps[min_edp_indices] += 0.001
+                self.edp_steps[min_edp_indices] += 0.0001
                 self.project(
                     spb_target=self.spb_target,
                     edp_steps=self.edp_steps

@@ -805,7 +805,8 @@ class StochasticDsaModel(DsaModel):
             self.spb_debt_safeguard_target = self.find_spb_deterministic(criterion='debt_safeguard')
             
             # If debt safeguard SPB target is higher than DSA target, save debt safeguard target
-            if self.spb_debt_safeguard_target > self.binding_spb_target + 1e-8: # 1e-8 tolerance for floating point errors
+            # 1e-3 tolerance for edp search algo edge case, 1e-8 tolerance for floating point errors
+            if self.spb_debt_safeguard_target > self.binding_spb_target + 1e-3 + 1e-8: 
                 self.debt_safeguard_binding = True
                 self.binding_spb_target = self.spb_debt_safeguard_target
                 self.spb_target = self.binding_spb_target
@@ -814,6 +815,8 @@ class StochasticDsaModel(DsaModel):
                 self.pb_target_dict['debt_safeguard'] = self.pb[self.adjustment_end]
                 if self.save_df: 
                     self.df_dict['debt_safeguard'] = self.df(all=True)
+            else:
+                self.debt_safeguard_binding = False
         else:
             self.debt_safeguard_binding = False
 
