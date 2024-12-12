@@ -13,7 +13,7 @@ plt.rcParams.update({'font.size': 14})
 from classes import StochasticDsaModel as dsa
 
 def run_dsa(
-        country_codes, 
+        countries, 
         adjustment_periods, 
         results_dict,
         folder_name, 
@@ -42,8 +42,8 @@ def run_dsa(
     Runs DSA for all EU countries and saves results individually.
     """
     start_time = time.time()
-    total_countries = len(country_codes)
-    for counter, country in enumerate(country_codes):
+    total_countries = len(countries)
+    for counter, country in enumerate(countries):
         counter += 1
         elapsed_time = time.time() - start_time
         estimated_remaining_time = round((elapsed_time / counter) * (total_countries - counter) / 60, 1)
@@ -100,7 +100,7 @@ def run_dsa(
     print('DSA run completed and saved.')
 
 def run_inv_scenario(
-        country_codes, 
+        countries, 
         results_dict,
         folder_name,
         adjustment_periods=[7], 
@@ -109,7 +109,7 @@ def run_inv_scenario(
     Run DSA with temporaryinvestment shock scenario and save results in results_dict
     """
     # Loop over countries and adjustment periods
-    for country in country_codes:
+    for country in countries:
         for adjustment_period in adjustment_periods:
 
             # Load baseline adjustment steps

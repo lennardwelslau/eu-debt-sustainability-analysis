@@ -207,7 +207,7 @@ def _create_annex_charts(annex_chart_dict, folder_name, save_svg=False, save_png
         if save_svg == True: plt.savefig(f'{base_dir}output/{folder_name}/charts/{get_country_name(country)}.svg', format='svg', bbox_inches='tight')
         if save_png == True: plt.savefig(f'{base_dir}output/{folder_name}/charts/{get_country_name(country)}.png', dpi=300, bbox_inches='tight')
 
-def plot_inv(country_codes, results_dict, folder_name, nrows=4, ncols=3, save_svg=False, save_png=True):
+def plot_inv(countries, results_dict, folder_name, nrows=4, ncols=3, save_svg=False, save_png=True):
     """
     Plots investment shock counterfactual scenario plots given paths of baseline and investment case
     """
@@ -215,7 +215,7 @@ def plot_inv(country_codes, results_dict, folder_name, nrows=4, ncols=3, save_sv
     tab10_palette = sns.color_palette('tab10')
 
     fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=(4*ncols, 3*nrows))
-    for i, country in enumerate(country_codes):
+    for i, country in enumerate(countries):
         
         # Load dataframes
         df_bl = results_dict[country][7]['df_dict']['binding'].loc[1:19][['spb', 'ob', 'd', 'ngdp']]
