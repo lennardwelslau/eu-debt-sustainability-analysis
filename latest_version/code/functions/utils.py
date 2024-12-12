@@ -6,7 +6,7 @@ import pandas as pd
 pd.options.display.float_format = "{:,.3f}".format
 
 # Import DSA model class and stochastic subclass
-from classes import *
+from classes import StochasticDsaModel as dsa
 
 def create_results_dict(country_codes, adjustment_periods=[4, 7]):
     """

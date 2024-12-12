@@ -10,7 +10,7 @@ plt.rcParams.update({'axes.grid':True,'grid.color':'black','grid.alpha':'0.25','
 plt.rcParams.update({'font.size': 14})
 
 # Import DSA model class and stochastic subclass
-from classes import *
+from classes import StochasticDsaModel as dsa
 
 def run_dsa(
         country_codes, 
@@ -53,7 +53,7 @@ def run_dsa(
             edp = True if country in edp_countries else False
             print(f'EDP {country} {edp}')
         for adjustment_period in adjustment_periods:
-            dsa = StochasticDsaModel(
+            model = dsa(
                 country=country, 
                 adjustment_period=adjustment_period,
                 start_year=start_year, # start year of projection, first year is baseline value
@@ -73,27 +73,27 @@ def run_dsa(
             # If stochastic_only is True, only run stochastic projection
             if stochastic_only:
                 if prob_target:
-                    dsa.prob_target = prob_target
-                dsa.find_spb_stochastic()
-                results_dict[country][adjustment_period]['spb_target_dict'] = {'stochastic': dsa.spb_target}
-                results_dict[country][adjustment_period]['df_dict'] = {'stochastic': dsa.df(all=True)}
+                    model.prob_target = prob_target
+                model.find_spb_stochastic()
+                results_dict[country][adjustment_period]['spb_target_dict'] = {'stochastic': model.spb_target}
+                results_dict[country][adjustment_period]['df_dict'] = {'stochastic': model.df(all=True)}
 
             # If stochastic_only is False, run full DSA with deterministic and stochastic projection
             else:
                 print(edp)
-                dsa.find_spb_binding(
+                model.find_spb_binding(
                     save_df=True, 
                     edp=edp, 
                     debt_safeguard=debt_safeguard_used, 
                     deficit_resilience=deficit_resilience,
                     stochastic_criteria=stochastic_criteria
                     )
-                results_dict[country][adjustment_period]['spb_target_dict'] = dsa.spb_target_dict
-                results_dict[country][adjustment_period]['df_dict'] = dsa.df_dict
-                results_dict[country][adjustment_period]['binding_parameter_dict'] = dsa.binding_parameter_dict 
+                results_dict[country][adjustment_period]['spb_target_dict'] = model.spb_target_dict
+                results_dict[country][adjustment_period]['df_dict'] = model.df_dict
+                results_dict[country][adjustment_period]['binding_parameter_dict'] = model.binding_parameter_dict 
 
-            dsa.project()
-            results_dict[country][adjustment_period]['df_dict']['no_policy_change'] = dsa.df(all=True)
+            model.project()
+            results_dict[country][adjustment_period]['df_dict']['no_policy_change'] = model.df(all=True)
 
     with open(f'../output/{folder_name}/{file_name}.pkl', 'wb') as f:
         pickle.dump(results_dict, f)
@@ -120,33 +120,33 @@ def run_inv_scenario(
             spb_steps[0] -= investment_shock
 
             # Create new instance of DSA model
-            dsa = StochasticDsaModel(
+            model = dsa(
                 country=country, 
                 adjustment_period=adjustment_period, 
                 shock_frequency='quarterly'
                 )
             
             # Set predefined adjustment steps, drop final one for reoptimization
-            dsa.predefined_spb_steps = spb_steps[:-1]
+            model.predefined_spb_steps = spb_steps[:-1]
 
             # Find binding spb, without safeguards since those are already included in the adjustment steps
-            dsa.find_spb_binding(edp=False, 
+            model.find_spb_binding(edp=False, 
                                  debt_safeguard=False, 
                                  deficit_resilience=False,
                                  print_results=False)
 
-            # if dsa.spb_binding < spb_binding baseline, increase by 0.5 
-            if dsa.spb_target < results_dict[country][adjustment_period]['binding_parameter_dict']['spb_target']:
-                dsa.spb_steps[-1] += investment_shock
-                dsa.project(spb_steps=dsa.spb_steps)
+            # if model.spb_binding < spb_binding baseline, increase by 0.5 
+            if model.spb_target < results_dict[country][adjustment_period]['binding_parameter_dict']['spb_target']:
+                model.spb_steps[-1] += investment_shock
+                model.project(spb_steps=model.spb_steps)
             
             # if binding debt_safeguard, simply use old adjustment steps
             if results_dict[country][adjustment_period]['binding_parameter_dict']['criterion'] == 'debt_safeguard':
-                dsa.spb_target = results_dict[country][adjustment_period]['binding_parameter_dict']['spb_target']
-                dsa.project(spb_target=dsa.spb_target)
+                model.spb_target = results_dict[country][adjustment_period]['binding_parameter_dict']['spb_target']
+                model.project(spb_target=model.spb_target)
 
             # Safe df to results dict
-            results_dict[country][adjustment_period]['df_dict']['inv'] = dsa.df(all=True)
+            results_dict[country][adjustment_period]['df_dict']['inv'] = model.df(all=True)
 
     # Save results dict    
     with open(f'../../output/{folder_name}/results_dict.pkl', 'wb') as f:
@@ -175,35 +175,35 @@ def run_consecutive_dsa(
         print_results = False if i < number_of_adjustment_periods else True
 
         adjustment_period = initial_adjustment_period + consecutive_adjustment_period * i
-        dsa = StochasticDsaModel(country=country, adjustment_period=adjustment_period)
+        model = dsa(country=country, adjustment_period=adjustment_period)
 
         # If demographic scenario data is provided, set ageing cost and potential GDP growth
         if scenario_data and scenario != 'baseline':
-            dsa.ageing_cost = scenario_data[scenario]['cost'].loc[country].to_numpy()
+            model.ageing_cost = scenario_data[scenario]['cost'].loc[country].to_numpy()
             rg_pot_scenario = scenario_data[scenario]['gdp'].loc[country].to_numpy()
-            for t, y in enumerate(range(dsa.adjustment_start, dsa.end_year + 1)):
+            for t, y in enumerate(range(model.adjustment_start, model.end_year + 1)):
                 if t > 5:
-                    dsa.rg_pot[t] = rg_pot_scenario[t]
-                    dsa.rgdp_pot[t] = dsa.rgdp_pot[t - 1] * (1 + dsa.rg_pot[t] / 100) 
-            dsa.rgdp_pot_bl = dsa.rgdp_pot.copy()
-            dsa._project_gdp()
+                    model.rg_pot[t] = rg_pot_scenario[t]
+                    model.rgdp_pot[t] = model.rgdp_pot[t - 1] * (1 + model.rg_pot[t] / 100) 
+            model.rgdp_pot_bl = model.rgdp_pot.copy()
+            model._project_gdp()
 
         # For first adjustment period, use initial adjustment period
         if i == 0:
-            dsa.find_spb_binding(debt_safeguard=debt_safeguard, deficit_resilience=deficit_resilience, edp=edp, print_results=print_results, save_df=True)
+            model.find_spb_binding(debt_safeguard=debt_safeguard, deficit_resilience=deficit_resilience, edp=edp, print_results=print_results, save_df=True)
 
         # For consecutive adjustment periods, use previous spb steps as pedefined steps
         else:
-            dsa.predefined_spb_steps = spb_steps # np.concatenate([spb_steps, np.nan * np.ones(consecutive_adjustment_period)])
-            dsa.find_spb_binding(debt_safeguard=debt_safeguard, deficit_resilience=deficit_resilience, edp=edp, print_results=print_results, save_df=True)
+            model.predefined_spb_steps = spb_steps # np.concatenate([spb_steps, np.nan * np.ones(consecutive_adjustment_period)])
+            model.find_spb_binding(debt_safeguard=debt_safeguard, deficit_resilience=deficit_resilience, edp=edp, print_results=print_results, save_df=True)
         
-        spb_steps = dsa.spb_steps
-        results[f'adjustment_period_{i+1}'] = dsa.spb_target_dict
-        print(dsa.spb_target_dict)
+        spb_steps = model.spb_steps
+        results[f'adjustment_period_{i+1}'] = model.spb_target_dict
+        print(model.spb_target_dict)
 
     # Plot results if requested
     if plot_results:
-        df = dsa.df().loc[:30].reset_index().set_index('y')
+        df = model.df().loc[:30].reset_index().set_index('y')
         ax = df[['ob', 'sb', 'spb_bca']].plot(legend=False, lw=2)
         ax2 = df['d'].plot(secondary_y=True, legend=False, lw=2)
 
@@ -229,7 +229,7 @@ def run_consecutive_dsa(
         # legend underneath plot
         plt.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=4)
 
-        dsa.plot_consecutive_dsa = plt.gcf()
+        model.plot_consecutive_model = plt.gcf()
         plt.show()
 
-    return dsa
+    return model

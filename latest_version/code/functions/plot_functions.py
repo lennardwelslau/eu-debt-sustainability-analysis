@@ -11,7 +11,7 @@ plt.rcParams.update({'font.size': 14})
 import seaborn as sns
 
 # Import DSA model class and stochastic subclass
-from classes import *
+from classes import StochasticDsaModel as dsa
 
 def get_country_name(iso):
     """
@@ -100,13 +100,13 @@ def _calc_annex_charts(results_dict):
 
             # Run fanchart for chart c)
             try:
-                dsa = StochasticDsaModel(country=country, adjustment_period=adjustment_period)
-                dsa.project(
+                model = dsa(country=country, adjustment_period=adjustment_period)
+                model.project(
                     spb_steps=binding_spb_steps, 
                     )            
-                dsa.simulate()
-                dsa.fanchart(show=False)
-                df_fanchart = dsa.df_fanchart
+                model.simulate()
+                model.fanchart(show=False)
+                df_fanchart = model.df_fanchart
                 df_fanchart.loc[2+adjustment_period+6:, 'p10':'p90'] = np.nan
                 annex_chart_dict[country][adjustment_period]['df_fanchart'] = df_fanchart.set_index('year').loc[:2053]
             except:
