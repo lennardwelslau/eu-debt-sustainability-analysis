@@ -11,7 +11,7 @@ plt.rcParams.update({'font.size': 14})
 import seaborn as sns
 
 # Import DSA model class and stochastic subclass
-from classes import StochasticDsaModel as dsa
+from classes import StochasticDsaModel as DSA
 
 def get_country_name(iso):
     """
@@ -100,7 +100,7 @@ def _calc_annex_charts(results_dict):
 
             # Run fanchart for chart c)
             try:
-                model = dsa(country=country, adjustment_period=adjustment_period)
+                model = DSA(country=country, adjustment_period=adjustment_period)
                 model.project(
                     spb_steps=binding_spb_steps, 
                     )            

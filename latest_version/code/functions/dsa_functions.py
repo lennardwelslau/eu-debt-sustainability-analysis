@@ -10,7 +10,7 @@ plt.rcParams.update({'axes.grid':True,'grid.color':'black','grid.alpha':'0.25','
 plt.rcParams.update({'font.size': 14})
 
 # Import DSA model class and stochastic subclass
-from classes import StochasticDsaModel as dsa
+from classes import StochasticDsaModel as DSA
 
 def run_dsa(
         countries, 
@@ -51,9 +51,8 @@ def run_dsa(
         
         if edp_countries:
             edp = True if country in edp_countries else False
-            print(f'EDP {country} {edp}')
         for adjustment_period in adjustment_periods:
-            model = dsa(
+            model = DSA(
                 country=country, 
                 adjustment_period=adjustment_period,
                 start_year=start_year, # start year of projection, first year is baseline value
@@ -80,11 +79,10 @@ def run_dsa(
 
             # If stochastic_only is False, run full DSA with deterministic and stochastic projection
             else:
-                print(edp)
                 model.find_spb_binding(
                     save_df=True, 
                     edp=edp, 
-                    debt_safeguard=debt_safeguard_used, 
+                    debt_safeguard=debt_safeguard, 
                     deficit_resilience=deficit_resilience,
                     stochastic_criteria=stochastic_criteria
                     )
@@ -120,7 +118,7 @@ def run_inv_scenario(
             spb_steps[0] -= investment_shock
 
             # Create new instance of DSA model
-            model = dsa(
+            model = DSA(
                 country=country, 
                 adjustment_period=adjustment_period, 
                 shock_frequency='quarterly'
@@ -175,7 +173,7 @@ def run_consecutive_dsa(
         print_results = False if i < number_of_adjustment_periods else True
 
         adjustment_period = initial_adjustment_period + consecutive_adjustment_period * i
-        model = dsa(country=country, adjustment_period=adjustment_period)
+        model = DSA(country=country, adjustment_period=adjustment_period)
 
         # If demographic scenario data is provided, set ageing cost and potential GDP growth
         if scenario_data and scenario != 'baseline':
