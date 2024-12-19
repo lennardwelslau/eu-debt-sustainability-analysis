@@ -153,7 +153,7 @@ def run_inv_scenario(
 def run_consecutive_dsa(
         country,
         adjustment_start=2025, 
-        initial_adjustment_period=7, 
+        initial_adjustment_period=4, 
         consecutive_adjustment_period=4, 
         number_of_adjustment_periods=3, 
         scenario_data=None,
