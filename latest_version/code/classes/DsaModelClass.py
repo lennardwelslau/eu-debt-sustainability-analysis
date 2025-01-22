@@ -877,8 +877,8 @@ class DsaModel:
             # Total SPB for calcualtion of structural deficit
             self.SPB[t] = self.spb[t] / 100 * self.ngdp[t]
 
-            # Calculate expenditure growth
-            self.net_expenditure_growth[t] = self.ng[t] - (self.spb[t] - self.spb[t - 1])/self.expenditure_share * 100
+            # Calculate expenditure growth (changed from ng to rg_pot, and spb to spb_bca to match with EC_formula)
+            self.net_expenditure_growth[t] = self.rg_pot[t] + self.pi[t] - (self.spb_bca[t] - self.spb_bca[t - 1]) / self.expenditure_share * 100
 
     def _project_pb_from_spb(self):
         """
