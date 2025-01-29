@@ -427,7 +427,7 @@ class DsaModel:
             self.i_lt_bl[30:] = 4
 
         yield_curve_coef = 0.5
-        self.i_st_bl[30:] = self.i_lt[30] * yield_curve_coef
+        self.i_st_bl[30:] = self.i_lt_bl[30] * yield_curve_coef
 
         # Interpolate missing values
         x_st = np.arange(len(self.i_st_bl))
