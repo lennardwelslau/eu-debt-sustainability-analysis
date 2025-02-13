@@ -1,3 +1,6 @@
+# NOTE: Since introduction of the GroupDsaModel, many of the functions here are redundant.
+# A more efficent way to run DSA is to use the GroupDsaModel class and its methods.
+
 # Import libraries and modules
 import os
 base_dir = '../' * (os.getcwd().split(os.sep)[::-1].index('code')+1)

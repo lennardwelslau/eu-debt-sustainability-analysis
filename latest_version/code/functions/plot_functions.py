@@ -204,6 +204,8 @@ def _create_annex_charts(annex_chart_dict, folder_name, save_svg=False, save_png
         fig.subplots_adjust(top=0.92)
 
         # Export charts
+        if not os.path.exists(f'{base_dir}output/{folder_name}/charts'):
+            os.makedirs(f'{base_dir}output/{folder_name}/charts')
         if save_svg == True: plt.savefig(f'{base_dir}output/{folder_name}/charts/{get_country_name(country)}.svg', format='svg', bbox_inches='tight')
         if save_png == True: plt.savefig(f'{base_dir}output/{folder_name}/charts/{get_country_name(country)}.png', dpi=300, bbox_inches='tight')
 

@@ -1,3 +1,6 @@
+# NOTE: Since introduction of the GroupDsaModel, many of the functions here are redundant.
+# A more efficent way to run DSA is to use the GroupDsaModel class and its methods.
+
 # Import libraries and modules
 import os
 import numpy as np
@@ -35,7 +38,7 @@ def run_dsa(
         shock_frequency='quarterly', # frequency of shocks, 'quarterly' or 'annual'
         estimation='normal', # estimation method for covariance matrix, 'normal' or 'var_cholesky', or 'var_bootstrap'
         fiscal_multiplier=0.75, # size of the fiscal multiplier
-        fiscal_multiplier_type='com', # type of fiscal multiplier
+        fiscal_multiplier_type='ec', # type of fiscal multiplier
         bond_data=False, # Use bond level data for repayment profile,
         ):
     """

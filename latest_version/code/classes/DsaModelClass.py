@@ -52,7 +52,7 @@ class DsaModel:
             ageing_cost_period=10,  # number of years for ageing cost adjustment after adjustment period
             fiscal_multiplier=0.75, # fiscal multiplier for fiscal adjustment
             fiscal_multiplier_persistence=3, # persistence of fiscal multiplier in years
-            fiscal_multiplier_type='com', # type of fiscal multiplier, commission or pers version 
+            fiscal_multiplier_type='ec', # type of fiscal multiplier, commission or pers version 
             bond_data=False, # Use bond level data for repayment profile
         ):
 
@@ -700,8 +700,8 @@ class DsaModel:
         Project nominal GDP.
         """ 
         # Project real growth and apply fiscal multiplier
-        if self.fiscal_multiplier_type == 'com': 
-            self._calc_rgdp_com()
+        if self.fiscal_multiplier_type == 'ec': 
+            self._calc_rgdp_ec()
         elif self.fiscal_multiplier_type == 'pers': 
             self._calc_rgdp_pers()
         else : 
@@ -737,7 +737,7 @@ class DsaModel:
             self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
             self.rg[t] = (self.rgdp[t] - self.rgdp[t - 1]) / self.rgdp[t - 1] * 100
 
-    def _calc_rgdp_com(self):
+    def _calc_rgdp_ec(self):
         """
         Calculates real GDP and real growth, assumes output gap closes in 3 years with 2/3 and 1/3 rule
         """
@@ -1356,7 +1356,52 @@ class DsaModel:
                         edp_steps=self.edp_steps,
                         deficit_resilience_steps=self.deficit_resilience_steps
                     )
-    
+
+    def project_fr(self, coefs, smooth_period=1):
+        """
+        Project the model with a fiscal reaction function, given reaction coeffiecnts.
+        FR function can be linear, quadratic or cubic.
+        """
+        # Extract intercept and fr coefficients
+        fr_coefs = np.zeros(4)
+        fr_coefs[:len(coefs)] = coefs
+
+        # Define fiscal reaction function
+        def fr_func(t):
+            spb = (
+                fr_coefs[0]
+                + fr_coefs[1] * self.d[t-1] 
+                + fr_coefs[2] * self.d[t-1]**2 
+                + fr_coefs[3] * self.d[t-1]**3 
+                )
+            return spb
+
+        # Project with fiscal reaction function to calculate initial smooth step guess
+        self.project()
+        initial_step = fr_func(self.adjustment_start) - self.spb_bca[self.adjustment_start]
+        smooth_step_guess = initial_step / smooth_period
+        
+        # Adjust the initial steps until they match the fr at the end of smoothing
+        if smooth_period > 1:
+            step_diff = 10 # arbitrary value to start
+            while abs(step_diff) > 1e-3:
+                self.spb_steps[:smooth_period] = smooth_step_guess
+                self.project(spb_steps=self.spb_steps)
+                actual_step = fr_func(self.adjustment_start + smooth_period) - self.spb_bca[self.adjustment_start]
+                step_diff = actual_step - smooth_step_guess * smooth_period
+                smooth_step_guess += step_diff / smooth_period
+        
+        # Project with fiscal reaction function after smooth period
+        for i, t in enumerate(
+            range(self.adjustment_start + smooth_period, self.adjustment_end + 1), 
+            start=smooth_period-1
+            ):
+            spb = fr_func(t)
+            self.spb_steps[i] = spb - self.spb_bca[t]
+            self.project(spb_steps=self.spb_steps)
+        
+
+
     # ========================================================================================= #
     #                                   AUXILIARY METHODS                                       #
     # ========================================================================================= #

@@ -53,7 +53,7 @@ class StochasticDsaModel(DsaModel):
                 estimation='normal', # estimation method for covariance matrix
                 fiscal_multiplier=0.75, 
                 fiscal_multiplier_persistence=3,
-                fiscal_multiplier_type='com',
+                fiscal_multiplier_type='ec',
                 bond_data=False, # Use bond level data for repayment profile
                 ): 
         
@@ -499,7 +499,10 @@ class StochasticDsaModel(DsaModel):
             self.post_spb_steps = None
         
         if not hasattr(self, 'prob_target'):
-            self.prob_target = 0.3
+            if prob_target is None: 
+                self.prob_target = 0.3
+            else:
+                self.prob_target = prob_target
 
         #if self.country in ['DNK']: bounds = (-6,0) # Denmark's target function has large local minima for high values
         
