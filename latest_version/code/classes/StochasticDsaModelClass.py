@@ -27,8 +27,14 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-plt.rcParams.update({'axes.grid':True,'grid.color':'black','grid.alpha':'0.25','grid.linestyle':'--'})
-plt.rcParams.update({'font.size': 14})
+# Set plotting style
+plt.rcParams.update({
+    'axes.grid': True,
+    'grid.color': 'black',
+    'grid.alpha': 0.25,
+    'grid.linestyle': '-',
+    'font.size': 14
+})
 from scipy.optimize import minimize_scalar
 from statsmodels.tsa.api import VAR
 from numba import jit
@@ -419,9 +425,9 @@ class StochasticDsaModel(DsaModel):
 #                                AUXILIARY METHODS                                          #
 # ========================================================================================= #
 
-    def fanchart(self, var='d', save_as=False, show=True, xlim=(2023, 2040)):
+    def fanchart(self, var='d', plot=True, save_plot=False, xlim=(2023, 2040)):
         """
-        Plot a fanchart of the simulated debt-to-GDP ratio. And save the figure if save_as is specified.
+        Create a fanchart for the debt-to-GDP ratio or other variables. Saves data as df and plots if specified.
         """
         # Set stochastic variable
         sim_var = getattr(self, f'{var}_sim')
@@ -430,6 +436,7 @@ class StochasticDsaModel(DsaModel):
         # Check if first values of baseline and simulation are equal, if not, simulate
         if not np.isclose(sim_var[0, 0], bl_var[self.stochastic_start-1]): 
             self.simulate()
+            sim_var = getattr(self, f'{var}_sim')
 
         # Calculate the percentiles
         self.pcts_dict = {}
@@ -439,37 +446,36 @@ class StochasticDsaModel(DsaModel):
         # Create array of years and baseline debt-to-GDP ratio
         years = np.arange(self.start_year, self.end_year+1)
 
-        # Plot the results using fill between
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[10], self.pcts_dict[90], color='dodgerblue', edgecolor=None, alpha=0.2, label='10th-90th percentile')
-        ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[20], self.pcts_dict[80], color='dodgerblue', edgecolor=None, alpha=0.3, label='20th-80th percentile')
-        ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[30], self.pcts_dict[70], color='dodgerblue', edgecolor=None, alpha=0.4, label='30th-70th percentile')
-        ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[40], self.pcts_dict[60], color='dodgerblue', edgecolor=None, alpha=0.7, label='40th-60th percentile')
-        ax.plot(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[50], alpha=1, ls='-', color='black', label='Median')
-        ax.plot(years, bl_var, ls='--', color='red', label='Baseline')
+        # Plot the results using fill between if plot is True
+        if plot:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[10], self.pcts_dict[90], color='dodgerblue', edgecolor=None, alpha=0.2, label='10th-90th percentile')
+            ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[20], self.pcts_dict[80], color='dodgerblue', edgecolor=None, alpha=0.3, label='20th-80th percentile')
+            ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[30], self.pcts_dict[70], color='dodgerblue', edgecolor=None, alpha=0.4, label='30th-70th percentile')
+            ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[40], self.pcts_dict[60], color='dodgerblue', edgecolor=None, alpha=0.7, label='40th-60th percentile')
+            ax.plot(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[50], alpha=1, ls='-', color='black', label='Median')
+            ax.plot(years, bl_var, ls='--', color='red', label='Baseline')
 
-        # Plot layout
-        ax.legend(loc='best')
-        ax.xaxis.grid(False)
-        ylabel = 'Debt (percent of GDP)' if var == 'd' else var
-        ax.set_ylabel(ylabel)
-        ax.set_title(f'{self.stochastic_period}-year fanchart for {self.country} (adjustment {self.adjustment_start_year}-{self.adjustment_end_year})')
-        ax.set_xlim(xlim[0], xlim[1])
+            # Plot layout
+            ax.legend(loc='best')
+            ax.xaxis.grid(False)
+            ylabel = 'Debt (percent of GDP)' if var == 'd' else var
+            ax.set_ylabel(ylabel)
+            ax.set_title(f'{self.stochastic_period}-year fanchart for {self.country} (adjustment {self.adjustment_start_year}-{self.adjustment_end_year})')
+            ax.set_xlim(xlim[0], xlim[1])
+            plt.tight_layout()
+            plt.show()
 
-        # Saveplot data in a dataframe if self.save_df is specified
+        # Save plot if save_plot is True
+        if save_plot:
+            plt.savefig(save_as, dpi=300, bbox_inches='tight')
+
+        # Save fanchart data in a dataframe
         self.df_fanchart = pd.DataFrame({'year': years, 'baseline': bl_var})
         for pct in self.pcts_dict:
             df_pct = pd.DataFrame({'year': years[self.stochastic_start-1:self.stochastic_end+1], f'p{pct}': 
             self.pcts_dict[pct]})
             self.df_fanchart = self.df_fanchart.merge(df_pct, on='year', how='left')
-
-        # Save plot if save_as is specified
-        if save_as:
-            plt.savefig(save_as, dpi=300, bbox_inches='tight')
-        
-        # Do not show plot if show is False
-        if show == False:
-            plt.close()
 
 # ========================================================================================= #
 #                              STOCHASTIC OPTIMIZATION METHODS                              # 

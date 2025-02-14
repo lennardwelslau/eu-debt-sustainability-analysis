@@ -861,12 +861,12 @@ class DsaModel:
         for t in range(1, self.projection_period):
 
             # After adjustment period ageing costs affect the SPB for duration of "ageing_cost_period"
-            if t > self.adjustment_end and t <= self.adjustment_end + self.ageing_cost_period:
+            if t > self.adjustment_end and t <= self.adjustment_end + self.ageing_cost_period and self.policy_change:
                 self.ageing_component[t] = self.ageing_cost[t] - self.ageing_cost[self.adjustment_end]
                 # self.pension_revenue_component[t] = self.pension_revenue[t] - self.pension_revenue[self.adjustment_end]
                 # self.property_income_component[t] = self.property_income[t] - self.property_income[self.adjustment_end]
                 self.revenue_component[t] = self.revenue[t] - self.revenue[self.adjustment_end]
-            elif t > self.adjustment_end + self.ageing_cost_period:
+            elif t > self.adjustment_end + self.ageing_cost_period or not self.policy_change:
                 self.ageing_component[t] = self.ageing_component[t-1]
                 # self.pension_revenue_component[t] = self.pension_revenue_component[t-1]
                 # self.property_income_component[t] = self.property_income_component[t-1]   
@@ -1360,7 +1360,7 @@ class DsaModel:
     def project_fr(self, coefs, smooth_period=1):
         """
         Project the model with a fiscal reaction function, given reaction coeffiecnts.
-        FR function can be linear, quadratic or cubic.
+        FR function can be linear, quadratic or cubic. First coef is the intercept.
         """
         # Extract intercept and fr coefficients
         fr_coefs = np.zeros(4)

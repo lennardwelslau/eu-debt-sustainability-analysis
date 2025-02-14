@@ -1,11 +1,10 @@
 # ========================================================================================= #
-#               European Commission Debt Sustainability Analysis - Group DSA Class         #
+#               European Commission Debt Sustainability Analysis - Group DSA Class          #
 # ========================================================================================= #
 #
-# This class collects several DSA model instances for different countries and 
-# adjustment periods. Its methods run the DSA models and save the results. 
-# Computationally demanding tasks are run in parallel using concurrent.futures,
-# but can be deactivated via an optional argument.
+# This class collects several DSA model instances for different countries. Class methods 
+# run the DSA models and save the results. Computationally demanding tasks can be run in 
+# parallel using concurrent.futures.
 #
 # Author: Lennard Welslau
 # Updated: 2025-02-10
@@ -30,57 +29,50 @@ plt.rcParams.update({
 })
 
 class GroupDsaModel:
-    def __init__(self, countries, adjustment_periods, **dsa_params):
+    def __init__(self, countries, **dsa_params):
         """
         Initialize the GroupDsaModel instance.
 
         Parameters:
             countries (list): List of country codes.
-            adjustment_periods (list): List of adjustment periods.
             **dsa_params: Additional keyword arguments to pass to the DSA model.
         """
 
         # Store input parameters
         self.countries = countries
-        self.adjustment_periods = adjustment_periods
         self.dsa_params = dsa_params
         self._today = time.strftime('%Y_%m_%d')
 
-        # Dictionary to hold DSA model instances by country and adjustment period
-        self.models = {c: {adj: None for adj in adjustment_periods} for c in countries}
+        # Dictionaries to hold DSA model instances and results by country
+        self.models = {c: {} for c in countries}
+        self.results = {c: {} for c in countries}
 
-        # Dictionary to store results for each country and adjustment period
-        self.results = {c: {adj: None for adj in adjustment_periods} for c in countries}
-
-        # Initialize DSA models for each country and adjustment period
+        # Initialize DSA models for each country 
         self._init_models()
 
     def _init_models(self):
         """
-        Instantiate a DSA model for each country and adjustment period.
+        Instantiate a DSA model for each country.
 
         A local import is used here to avoid circular import issues.
         """
         from classes import StochasticDsaModel as DSA
         for country in self.countries:
-            for adj in self.adjustment_periods:
-                # Create a copy of the DSA parameters and update with country and adjustment period
+                # Create a copy of the DSA parameters and update with country
                 model_params = self.dsa_params.copy()
-                model_params['adjustment_period'] = adj
                 model_params['country'] = country
-                self.models[country][adj] = DSA(**model_params)
+                self.models[country] = DSA(**model_params)
 
     def update_params(self, update_params):
         """
         Update the attributes of each DSA model.
 
         Parameters:
-            **update_params: Dictionaries of parameters to update for each country and adjustment period.
+            **update_params: Dictionaries of parameters to update for each country.
         """
         for country in self.countries:
-            for adj in self.adjustment_periods:
                 for attr, value in update_params.items():
-                    setattr(self.models[country][adj], attr, value)
+                    setattr(self.models[country], attr, value)
                 
     def project(self, store_as=False, discard_models=False, **project_params):
         """
@@ -90,27 +82,27 @@ class GroupDsaModel:
             store_as (str): Key to use when storing to the result dictionary.
             discard_models (bool): If True, delete the model from memory after processing.
             **project_params: dictionaries of parameters to pass to the project method 
-            for each country and adjustment period.
+            for each country.
         """
         for country in self.countries:
-            for adj in self.adjustment_periods:
-
-                # Get the parameters for the current country and adjustment period
-                params = project_params.get(country, {}).get(adj, {})
-                self.models[country][adj].project(**params)
+                # Get the parameters for the current country
+                params = project_params.get(country, {})
+                self.models[country].project(**params)
         
                 # Store results if required
                 if store_as:
-                    self.results[country][adj] = {
-                        'spb_target_dict': {store_as: self.models[country][adj].spb_target},
-                        'df_dict': {store_as: self.models[country][adj].df(all=True)},
-                    }
+                    self.results[country]['spb_target_dict'] = {
+                        store_as: self.models[country].spb_target
+                        }
+                    self.results[country]['df_dict'] = {
+                        store_as: self.models[country].df(all=True)
+                        }
                 if discard_models:
-                    del self.models[country][adj]
+                    del self.models[country]
 
     def find_spb_binding(self, edp_countries=[], parallel=True, max_workers=None, discard_models=False, **find_binding_params):
         """
-        Run the binding SPB analysis for each (country, adjustment_period) pair.
+        Run the binding SPB analysis for each country.
 
         Parameters:
             edp_countries (list): List of countries for which EDP should be applied.
@@ -121,46 +113,41 @@ class GroupDsaModel:
             **find_binding_params: dict of additional parameters for find_spb_binding.
         """
         tasks = []
-        print(f'Running find_spb_binding for {len(self.countries)*len(self.adjustment_periods)} country-period pairs (parallel={parallel})')
-        for country in self.countries:
-            # Ensure the results dictionary exists for this country.
-            self.results[country] = {}
-            for adj, model in list(self.models[country].items()):
-                tasks.append((country, adj, model, edp_countries, find_binding_params))
+        print(f'Running find_spb_binding for {len(self.countries)} countries (parallel={parallel})')
+        for country, model in list(self.models.items()):
+            tasks.append((country, model, edp_countries, find_binding_params))
         
         if parallel:
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 futures = [executor.submit(_find_spb_binding_task, task) for task in tasks]
                 for future in tqdm(as_completed(futures), total=len(futures)):
                     try:
-                        country, adj, spb_dict, df_dict, binding_params = future.result()
-                        self.results[country][adj] = {
-                            'spb_target_dict': spb_dict,
-                            'df_dict': df_dict,
-                            'binding_parameter_dict': binding_params
-                        }
+                        country, spb_dict, df_dict, binding_params, df_fanchart = future.result()
+                        self.results[country]['spb_target_dict'] = spb_dict
+                        self.results[country]['df_dict'] = df_dict
+                        self.results[country]['binding_parameter_dict'] = binding_params
+                        self.results[country]['df_fanchart'] = df_fanchart
                         if discard_models:
-                            del self.models[country][adj]
+                            del self.models[country]
                     except Exception as e:
-                        print(f"Error processing binding task for {country} {adj}: {e}")
+                        print(f"Error processing binding tasks {e}")
         else:
             # Sequential processing using a simple loop.
             for task in tqdm(tasks):
                 try:
-                    country, adj, spb_dict, df_dict, binding_params = _find_spb_binding_task(task)
-                    self.results[country][adj] = {
-                        'spb_target_dict': spb_dict,
-                        'df_dict': df_dict,
-                        'binding_parameter_dict': binding_params
-                    }
+                    country, spb_dict, df_dict, binding_params, df_fanchart = _find_spb_binding_task(task)
+                    self.results[country]['spb_target_dict'] = spb_dict
+                    self.results[country]['df_dict'] = df_dict
+                    self.results[country]['binding_parameter_dict'] = binding_params
+                    self.results[country]['df_fanchart'] = df_fanchart
                     if discard_models:
-                        del self.models[country][adj]
+                        del self.models[country]
                 except Exception as e:
-                    print(f"Error processing binding task for {country} {adj}: {e}")
+                    print(f"Error processing binding task for {country}: {e}")
 
     def find_spb_stochastic(self, store_as='stochastic', parallel=True, max_workers=None, discard_models=False, **find_stochastic_params):
         """
-        Run the stochastic SPB analysis for each (country, adjustment_period) pair.
+        Run the stochastic SPB analysis for each country.
 
         Parameters:
             store_as (str): Key to use when storing the result.
@@ -171,38 +158,35 @@ class GroupDsaModel:
             **find_stochastic_params: dict of additional parameters for find_spb_stochastic.
         """
         tasks = []
-        print(f'Running find_spb_stochastic for {len(self.countries)*len(self.adjustment_periods)} country-period pairs (parallel={parallel})')
-        for country in self.countries:
-            for adj, model in list(self.models[country].items()):
-                tasks.append((country, adj, model, store_as, find_stochastic_params))
+        print(f'Running find_spb_stochastic for {len(self.countries)} countries (parallel={parallel})')
+        for country, model in list(self.models.items()):
+            tasks.append((country, model, store_as, find_stochastic_params))
         
         if parallel:
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 futures = [executor.submit(_find_spb_stochastic_task, task) for task in tasks]
                 for future in tqdm(as_completed(futures), total=len(futures)):
                     try:
-                        country, adj, spb_dict, df_dict = future.result()
-                        self.results[country][adj] = {
-                            'spb_target_dict': spb_dict,
-                            'df_dict': df_dict,
-                        }
+                        country, spb_dict, df_dict, df_fanchart = future.result()
+                        self.results[country]['spb_target_dict'] = spb_dict
+                        self.results[country]['df_dict'] = df_dict
+                        self.results[country]['df_fanchart'] = df_fanchart
                         if discard_models:
-                            del self.models[country][adj]
+                            del self.models[country]
                     except Exception as e:
-                        print(f"Error processing stochastic task for {country} {adj}: {e}")
+                        print(f"Error processing stochastic tasks {e}")
         else:
             # Sequential processing using a simple loop.
             for task in tqdm(tasks):
                 try:
-                    country, adj, spb_dict, df_dict = _find_spb_stochastic_task(task)
-                    self.results[country][adj] = {
-                        'spb_target_dict': spb_dict,
-                        'df_dict': df_dict,
-                    }
+                    country, spb_dict, df_dict, df_fanchart = _find_spb_stochastic_task(task)
+                    self.results[country]['spb_target_dict'] = spb_dict
+                    self.results[country]['df_dict'] = df_dict
+                    self.results[country]['df_fanchart'] = df_fanchart
                     if discard_models:
-                        del self.models[country][adj]
+                        del self.models[country]
                 except Exception as e:
-                    print(f"Error processing stochastic task for {country} {adj}: {e}")
+                    print(f"Error processing stochastic task for {country}: {e}")
 
     def project_fr(self, store_as=False, discard_models=False, **fr_params):
         """
@@ -212,24 +196,23 @@ class GroupDsaModel:
             store_as (str): Key to use when storing to the results dictionary.
             discard_models (bool): If True, delete the model from memory after processing.
             **fr_params: dictionaries of parameters to pass to the project_fr method 
-            for each country and adjustment period.
+            for each country.
         """
         for country in self.countries:
-            for adj in self.adjustment_periods:
-
-                # Get the parameters for the current country and adjustment period
-                params = fr_params.get(country, {}).get(adj, {})
-                self.models[country][adj].project_fr(**params)
+                
+                # Get the parameters for the current country
+                params = fr_params.get(country, {})
+                self.models[country].project_fr(**params)
 
                 # Store results if required
                 if store_as:
-                    self.results[country][adj] = {
-                        'df_dict': {store_as: self.models[country][adj].df(all=True)},
-                    }
+                    self.results[country]['df_dict'] = {
+                        store_as: self.models[country].df(all=True),
+                        }
                 if discard_models:
-                    del self.models[country][adj]
+                    del self.models[country]
 
-    def save_spb(self, folder=None, file='spb_targets.xlsx', save=True):
+    def save_spb(self, folder=None, file=None):
         """
         Save the SPB targets for each instance to an Excel file.
 
@@ -246,17 +229,16 @@ class GroupDsaModel:
         """
         # Build the SPB table from the results
         self.df_spb = pd.DataFrame()
-        for country in self.results.keys():
-            for adj in self.results[country].keys():
-                spb_target_dict = self.results[country][adj]['spb_target_dict']
-                for scenario, spb_val in spb_target_dict.items():
-                    temp_df = pd.DataFrame({
-                        'country': [country],
-                        'adjustment_period': [adj],
-                        'scenario': [scenario],
-                        'spbstar': [spb_val]
-                    })
-                    self.df_spb = pd.concat([self.df_spb, temp_df], ignore_index=True)
+        for country in self.results:
+            spb_target_dict = self.results[country]['spb_target_dict']
+            for scenario, spb_val in spb_target_dict.items():
+                temp_df = pd.DataFrame({
+                    'country': [country],
+                    'adjustment_period': [self.dsa_params['adjustment_period']],
+                    'scenario': [scenario],
+                    'spbstar': [spb_val]
+                })
+                self.df_spb = pd.concat([self.df_spb, temp_df], ignore_index=True)
 
         # Pivot to have one row per (country, adjustment_period)
         self.df_spb = self.df_spb.pivot(
@@ -298,20 +280,21 @@ class GroupDsaModel:
         # Save the DataFrame to Excel if required
         if folder is None:
             folder = f'{self._today}/'
-        output_path = '../output/'
-        folder_path = os.path.join(output_path, folder)
-        file_path = os.path.join(folder_path, file)
+        folder_path = os.path.join('../output/', folder)
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
+        if file is None:
+            file = f"spb_targets_{self.dsa_params['adjustment_period']}y.xlsx"
+        file_path = os.path.join(folder_path, file)
         self.df_spb.to_excel(file_path, index=False)
         print(f"SPB table saved to {file_path}")
 
         return self.df_spb.dropna(axis=1, how='all')
 
-    def save_dfs(self, folder=None, file='timeseries.xlsx'):
+    def save_dfs(self, folder=None, file=None):
         """
         Save the time-series DataFrames stored in the results to an Excel file,
-        with one sheet per country/adjustment period/scenario.
+        with one sheet per country/scenario.
 
         Parameters:
             folder (str): Output folder path. If None, a folder based on the current date is created.
@@ -319,19 +302,19 @@ class GroupDsaModel:
         """
         if folder is None:
             folder = f'{self._today}/'
-        output_path = '../output/'
-        folder_path = os.path.join(output_path, folder)
-        file_path = os.path.join(folder_path, file)
+        folder_path = os.path.join('../output/', folder)
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
+        if file is None:
+            file = f"timeseries_{self.dsa_params['adjustment_period']}y.xlsx"
+        file_path = os.path.join(folder_path, file)
         with pd.ExcelWriter(file_path) as writer:
-            for country, adj_dict in self.results.items():
-                for adj, res in adj_dict.items():
-                    df_dict = res['df_dict']
-                    for scenario, df in df_dict.items():
-                        # Limit the sheet name to 31 characters
-                        sheet_name = f'{country}_{adj}_{scenario}'[:31]
-                        df.to_excel(writer, sheet_name=sheet_name)
+            for country, res in self.results.items():
+                df_dict = res['df_dict']
+                for scenario, df in df_dict.items():
+                    # Limit the sheet name to 31 characters
+                    sheet_name = f"{country}_{self.dsa_params['adjustment_period']}_{scenario}"[:31]
+                    df.to_excel(writer, sheet_name=sheet_name)
         print(f"DataFrames saved to {file_path}")
 
     def get_country_model(self, country):
@@ -367,7 +350,7 @@ class GroupDsaModel:
         }
         return country_code_dict.get(country.upper(), None)
 
-    def df_avg(self, countries=None, adjustment_period=None, scenario='binding'):
+    def df_avg(self, countries=None, scenario='binding'):
         """
         Calculate average of model DataFrames:
         - For non-absolute (lowercase) attributes: compute the weighted average 
@@ -376,7 +359,6 @@ class GroupDsaModel:
         
         Parameters:
         countries (list): List of countries to process. Defaults to self.countries.
-        adjustment_period (str): The adjustment period to use. Defaults to the first period.
         scenario (str): The scenario key to extract from each country's df_dict.
         
         Returns:
@@ -395,10 +377,6 @@ class GroupDsaModel:
         elif countries is None:
             countries = self.countries
         
-        # Use first adjustment period in list if none provided.
-        if adjustment_period is None:
-            adjustment_period = self.adjustment_periods[0]
-        
         # Initialize dictionaries to store each country's DataFrame and its corresponding weight series.
         scenario_df_dict = {c: None for c in countries}
         weight_series_dict = {c: None for c in countries}
@@ -406,7 +384,7 @@ class GroupDsaModel:
         # Loop over each country to extract the desired scenario DataFrame and compute weights.
         for country in countries:
             # Access the dictionary containing DataFrames for the current country and period.
-            df_dict = self.results[country][adjustment_period]['df_dict']
+            df_dict = self.results[country]['df_dict']
             # Check if the specified scenario exists for this country.
             if scenario in df_dict:
                 df = df_dict[scenario]
@@ -443,8 +421,6 @@ class GroupDsaModel:
                 print(f"Error in calculating average for attribute: {attr}: {e}")
         
         return avg_df
-    
-
 
 # Module-level helper function for binding SPB
 def _find_spb_binding_task(args):
@@ -453,26 +429,31 @@ def _find_spb_binding_task(args):
     
     Expected arguments:
     - country: the country code (string)
-    - adj: the adjustment period (could be a number or string)
     - model: the model instance
     - edp_countries: list of countries for which EDP should be applied
     - find_binding_params: dict of additional parameters for find_spb_binding
     """
-    country, adj, model, edp_countries, find_binding_params = args
+    country, model, edp_countries, find_binding_params = args
     # Determine whether to apply EDP for this country
     edp = country in edp_countries
 
     # Run the binding SPB analysis on the model
     model.find_spb_binding(save_df=True, edp=edp, **find_binding_params)
+
+    # get fanchart
+    model.fanchart(plot=False)
+
+    # Extract the results from the model
     spb_dict = model.spb_target_dict
     df_dict = model.df_dict
     binding_params = model.binding_parameter_dict
+    df_fanchart = model.df_fanchart
 
     # Run the projection step and add the 'no_policy_change' results
     model.project()
     df_dict['no_policy_change'] = model.df(all=True)
 
-    return country, adj, spb_dict, df_dict, binding_params
+    return country, spb_dict, df_dict, binding_params, df_fanchart
 
 # Module-level helper function for stochastic SPB
 def _find_spb_stochastic_task(args):
@@ -481,13 +462,15 @@ def _find_spb_stochastic_task(args):
     
     Expected arguments:
     - country: the country code (string)
-    - adj: the adjustment period identifier
     - model: the model instance
     - store_as: key to use for saving the result in the dictionary
     - find_stochastic_params: dict of additional parameters for find_spb_stochastic
     """
-    country, adj, model, store_as, find_stochastic_params = args
+    country, model, store_as, find_stochastic_params = args
     model.find_spb_stochastic(**find_stochastic_params)
+    model.fanchart(plot=False)
     spb_dict = {store_as: model.spb_target}
     df_dict = {store_as: model.df(all=True)}
-    return country, adj, spb_dict, df_dict
+    df_fanchart = model.df_fanchart
+    return country, spb_dict, df_dict, df_fanchart
+

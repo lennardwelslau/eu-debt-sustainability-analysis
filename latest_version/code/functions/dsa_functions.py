@@ -1,5 +1,6 @@
-# NOTE: Since introduction of the GroupDsaModel, many of the functions here are redundant.
-# A more efficent way to run DSA is to use the GroupDsaModel class and its methods.
+# NOTE: Since introduction of the GroupDsaModel, the run_dsa function is redundant.
+# The results_dict produced by the GroupDsaModel differs from the run_dsa results_dict,
+# in that in only contains a single adjustment period. 
 
 # Import libraries and modules
 import os
@@ -93,6 +94,23 @@ def run_dsa(
                 results_dict[country][adjustment_period]['df_dict'] = model.df_dict
                 results_dict[country][adjustment_period]['binding_parameter_dict'] = model.binding_parameter_dict 
 
+            # Project no policy change scenario
+            model = DSA(
+                country=country, 
+                adjustment_period=0,
+                start_year=start_year, # start year of projection, first year is baseline value
+                end_year=end_year, # end year of projection
+                adjustment_start_year=adjustment_start_year, # start year of linear spb_bca adjustment
+                ageing_cost_period=ageing_cost_period, # number of years for ageing cost adjustment
+                shock_sample_start=shock_sample_start, # start year of shock sample
+                stochastic_start_year=stochastic_start_year, # start year of stochastic projection
+                stochastic_period=stochastic_period, # number of years for stochastic projection
+                shock_frequency=shock_frequency, # frequency of shocks, 'quarterly' or 'annual'
+                estimation=estimation, # estimation method for covariance matrix, 'normal' or 'var'
+                fiscal_multiplier=fiscal_multiplier, # size of the fiscal multiplier
+                fiscal_multiplier_type=fiscal_multiplier_type, # type of fiscal multiplier
+                bond_data=bond_data, # Use bond level data for repayment profile
+                )
             model.project()
             results_dict[country][adjustment_period]['df_dict']['no_policy_change'] = model.df(all=True)
 
