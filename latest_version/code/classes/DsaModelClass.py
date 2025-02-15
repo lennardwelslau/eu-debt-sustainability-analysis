@@ -719,16 +719,22 @@ class DsaModel:
         Calculates real GDP and real growth, assumes persistence in fiscal_multiplier effect leading to output gap closing in 3 years
         """
         for t in range(1, self.projection_period):
-
             # Fiscal multiplier effect from change in SPB relative to baseline
-            self.fiscal_multiplier_effect[t] = self.fiscal_multiplier * ((self.spb_bca[t] - self.spb_bca[t - 1]) - (self.spb_bl[t] - self.spb_bl[t - 1]))
+            self.fiscal_multiplier_effect[t] = (self.fiscal_multiplier 
+                                                * ((self.spb_bca[t] - self.spb_bca[t - 1]) 
+                                                   - (self.spb_bl[t] - self.spb_bl[t - 1]))
+                                                )
 
             # Add spillover effect to fiscal_multiplier effect if defined
             if hasattr(self, 'fiscal_multiplier_spillover'): 
                 self.fiscal_multiplier_effect[t] += self.fiscal_multiplier_spillover[t]
 
             # Calculate persistence term of multiplier effect
-            persistence_term = sum([self.fiscal_multiplier_effect[t - i] * (self.fiscal_multiplier_persistence - i) / self.fiscal_multiplier_persistence for i in range(1, self.fiscal_multiplier_persistence)])
+            persistence_term = sum([self.fiscal_multiplier_effect[t - i] 
+                                    * (self.fiscal_multiplier_persistence - i) 
+                                    / self.fiscal_multiplier_persistence 
+                                    for i in range(1, self.fiscal_multiplier_persistence)]
+                                    )
 
             # Fiscal multiplier effect on output gap
             self.output_gap[t] = self.output_gap_bl[t] - self.fiscal_multiplier_effect[t] - persistence_term
@@ -742,9 +748,13 @@ class DsaModel:
         Calculates real GDP and real growth, assumes output gap closes in 3 years with 2/3 and 1/3 rule
         """
         for t in range(1, self.projection_period):
-
             # Fiscal multiplier effect from change in SPB relative to baseline
-            self.fiscal_multiplier_effect[t] = self.fiscal_multiplier * ((self.spb_bca[t] - self.spb_bca[t - 1]) - (self.spb_bl[t] - self.spb_bl[t - 1]))
+            self.fiscal_multiplier_effect[t] = (self.fiscal_multiplier 
+                                                * ((self.spb_bca[t] 
+                                                    - self.spb_bca[t - 1]) 
+                                                    - (self.spb_bl[t] 
+                                                    - self.spb_bl[t - 1]))
+                                                )
 
             # Add spillover effect to fiscal_multiplier effect if defined
             if hasattr(self, 'fiscal_multiplier_spillover'): 
@@ -754,11 +764,15 @@ class DsaModel:
             if t == self.adjustment_start: 
                 self.output_gap[t] = self.output_gap_bl[t] - self.fiscal_multiplier_effect[t]
 
-            elif t in range(self.adjustment_start + 1, self.adjustment_end + 1 ) and self.policy_change:
-                self.output_gap[t] = (self.fiscal_multiplier_persistence - 1) / self.fiscal_multiplier_persistence * self.output_gap[t-1] - self.fiscal_multiplier_effect[t]
+            elif t in range(self.adjustment_start + 1, self.adjustment_end + 1):
+                self.output_gap[t] = ((self.fiscal_multiplier_persistence - 1) 
+                                      / self.fiscal_multiplier_persistence 
+                                      * self.output_gap[t-1] 
+                                      - self.fiscal_multiplier_effect[t]
+                                    )
                 #self.output_gap[t] = 2 / 3 * self.output_gap[t-1] - self.fiscal_multiplier_effect[t]
             
-            elif t in range(self.adjustment_end + 1, self.adjustment_end + self.fiscal_multiplier_persistence + 1) and self.policy_change:
+            elif t in range(self.adjustment_end + 1, self.adjustment_end + self.fiscal_multiplier_persistence + 1):
                 self.output_gap[t] = self.output_gap[t-1] - 1 / self.fiscal_multiplier_persistence * self.output_gap[self.adjustment_end]
                     
             # Real growth and real GDP
@@ -859,19 +873,30 @@ class DsaModel:
         Project structural primary balance
         """
         for t in range(1, self.projection_period):
-
-            # After adjustment period ageing costs affect the SPB for duration of "ageing_cost_period"
-            if t > self.adjustment_end and t <= self.adjustment_end + self.ageing_cost_period and self.policy_change:
+            # Ageing costs affect the SPB for duration of "ageing_cost_period" if there is policy change
+            if ((t > self.adjustment_end and t <= self.adjustment_end + self.ageing_cost_period) 
+                and self.policy_change):
                 self.ageing_component[t] = self.ageing_cost[t] - self.ageing_cost[self.adjustment_end]
                 # self.pension_revenue_component[t] = self.pension_revenue[t] - self.pension_revenue[self.adjustment_end]
                 # self.property_income_component[t] = self.property_income[t] - self.property_income[self.adjustment_end]
                 self.revenue_component[t] = self.revenue[t] - self.revenue[self.adjustment_end]
-            elif t > self.adjustment_end + self.ageing_cost_period or not self.policy_change:
+            
+            # After the ageing cost period, the ageing component is kept constant
+            elif (t > self.adjustment_end + self.ageing_cost_period 
+                  and self.policy_change):
                 self.ageing_component[t] = self.ageing_component[t-1]
                 # self.pension_revenue_component[t] = self.pension_revenue_component[t-1]
                 # self.property_income_component[t] = self.property_income_component[t-1]   
                 self.revenue_component[t] = self.revenue_component[t-1]
+            
+            # In a no fiscal policy change scenario, spb is kept constant
+            elif not self.policy_change:
+                self.ageing_component[t] = 0
+                # self.pension_revenue_component[t] = 0
+                # self.property_income_component[t] = 0
+                self.revenue_component[t] = 0
 
+            # Calculate spb aby adjusting spb before ageing cost for additional components
             self.spb[t] = self.spb_bca[t] - self.ageing_component[t] + self.revenue_component[t] #+ self.pension_revenue_component[t] + self.property_income_component[t]
 
             # Total SPB for calcualtion of structural deficit
