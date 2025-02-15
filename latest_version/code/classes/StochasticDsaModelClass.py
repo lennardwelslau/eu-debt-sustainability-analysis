@@ -482,7 +482,7 @@ class StochasticDsaModel(DsaModel):
 # ========================================================================================= #
 
     def find_spb_stochastic(self, 
-                            bounds=(-20, 20), 
+                            bounds=(-10, 10), 
                             stochastic_criteria=['debt_explodes', 'debt_above_60'],
                             print_update=False,
                             prob_target=None):
