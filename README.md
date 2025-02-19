@@ -4,17 +4,22 @@
 
 This repository contains Python code for the replication of the European Commission's Debt Sustainability Analysis featured in the Bruegel working paper [The implications of the European Union’s new fiscal rules](https://www.bruegel.org/policy-brief/implications-european-unions-new-fiscal-rules) by Zsolt Darvas, Lennard Welslau, and Jeromin Zettelmeyer (2024). The replication was first introduced in the 2023 working paper [A Quantitative Evaluation of the European Commission´s Fiscal Governance Proposal](https://www.bruegel.org/working-paper/quantitative-evaluation-european-commissions-fiscal-governance-proposal). For details on the methodology, refer to the sections below, as well as Annex A3 of the [European Commission's Debt Sustainability Monitor 2023](https://economy-finance.ec.europa.eu/publications/debt-sustainability-monitor-2023_en).
 
-- For the latest version of the model, including an application of rules agreed on by the Council, the European Parliament, and the Commission, refer to the [latest_version](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/latest_version/) folder.
-  - The Jupyter Notebook [tutorial.ipynb](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/latest_version/tutorial.ipynb) introduces various model functionalities. [main.ipynb](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/latest_version/main.ipynb) produces the results.
-  - The [functions](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/latest_version/code/functions) folder contains functions that organize the anlysis.
-  - The [classes](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/latest_version/code/classes/) folder contains the Python classes [DsaModel](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/latest_version/code/classes/DsaModelClass.py) and [StochasticDsaModel](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/latest_version/code/classes/StochasticDsaModelClass.py) that facilitate the deterministic and stochastic analysis.
-  - The [exercises](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/latest_version/code/exercises/) folder contains additional notebooks to perform exercises like the simulation of an investment shock under a green golden rule.
-  - Results are saved in the [output](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/latest_version/output) folder.
-  - All input data are saved in the [InputData](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/latest_version/data/InputData) folder.
-  - For details on data sources, see the [SOURCES.xlsx](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/latest_version/data/SOURCES.xlsx) file in the [data](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/latest_version/data) folder.
-- The [sep23_working_paper](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/sep23_working_paper/) folder hosts a previous version of the code that can be used to reproduce the results in our original working paper.
+- Jupyter Notebooks that organize the analysis and provide introductions to the model:
+  - [demo.ipynb](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/demo.ipynb) provides a quick overview. 
+  - [tutorial.ipynb](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/tutorial.ipynb) introduces various model functionalities.
+  - [main.ipynb](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/main.ipynb) produces the results.
+- The [classes](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/classes/) folder contains the Python classes containing the actual model:
+  - [DsaModel](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/classes/DsaModelClass.py) facilitates the deterministic analysis.
+  - [StochasticDsaModel](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/classes/StochasticDsaModelClass.py) facilitates stochastic analysis.
+  - [GroupDsaModel](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/classes/GroupDsaModelClass.py) allows running several DSA models in parallel.
+- The [functions](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/functions) folder contains functions for additional exercises and plotting.
+- The [exercises](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/exercises/) folder contains additional notebooks to perform exercises like the simulation of an investment shock under a green golden rule.
+- Results are saved in the [output](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/output) folder.
+- Raw and cleaned data is located in the [data](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/data/) folder.
+  - All input data are saved in the [InputData](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/data/InputData) folder.
+  - For details on data sources, see the [SOURCES.xlsx](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/data/SOURCES.xlsx) file in the [data](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/data) folder.
 
-External packages used include numpy, pandas, matplotlib, scipy, and numba. For comments and suggestions please contact lennard.welslau[at]gmail[dot]com.
+External packages used include matplotlib, scipy, and numba. For comments and suggestions please contact lennard.welslau[at]gmail[dot]com.
 
 Author: Lennard Welslau
 Last update: 01 December 2024
@@ -55,7 +60,7 @@ These adverse scenarios are assumed for ten years after the end of the adjustmen
 - Stock-flow adjustments are taken from the AMECO database and based on projections by the European Commission’s DG ECFIN, available up to 2025. From 2026, stock-flow adjustments are assumed to be zero for all but three EU countries (Finland, Luxembourg, and Greece, see [DSM 2023 Section II.2](https://economy-finance.ec.europa.eu/publications/debt-sustainability-monitor-2023_en) for details).
 - Nominal GDP growth, the primary balance, and the implicit interest rate on government debt are endogenous model variables. They build on medium-term real growth, output gap, and GDP-deflator projections by the European Commission’s Output Gap Working Group, long-term growth and ageing-cost projections based on the European Commission’s 2024 Ageing report, long-term market expectations for inflation from Bloomberg, structural primary balance projections from the AMECO database, fiscal multiplier data based on Carnot and de Castro (2015), and budget balance semi-elasticities based on Mourre et al. (2019).
 
-The projection of the implicit interest rate on government debt further relies on ECB data on government debt stocks, shares of short- and long-term debt issuance, and average annual debt redemption, as well as market expectations for interest rates from Bloomberg. All data sources are described in detail in the [SOURCES.xlsx](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/latest_version/data/SOURCES.xlsx) file found in the data folder of the accompanying GitHub repository.
+The projection of the implicit interest rate on government debt further relies on ECB data on government debt stocks, shares of short- and long-term debt issuance, and average annual debt redemption, as well as market expectations for interest rates from Bloomberg. All data sources are described in detail in the [SOURCES.xlsx](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/data/SOURCES.xlsx) file found in the data folder of the accompanying GitHub repository.
 
 #### Projecting Nominal Growth
 
@@ -99,7 +104,7 @@ The Commission’s methodology assumes no shocks during the adjustment period. S
 
 #### Definition of Historical Shocks
 
-Quarterly shocks are defined as the first differences in the historical quarterly time series. We correct for outliers by replacing observations that fall outside the 5th and 95th percentiles with the respective thresholds. Historical series are collected from the same sources listed in Table A4.1 of the DSM. Quarterly series for exchange rates, nominal GDP growth, short- and long-term interest rates, and the primary balance are all sourced from Eurostat. These data sources are described in detail in the [SOURCES.xlsx](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/latest_version/data/SOURCES.xlsx) file referenced above.
+Quarterly shocks are defined as the first differences in the historical quarterly time series. We correct for outliers by replacing observations that fall outside the 5th and 95th percentiles with the respective thresholds. Historical series are collected from the same sources listed in Table A4.1 of the DSM. Quarterly series for exchange rates, nominal GDP growth, short- and long-term interest rates, and the primary balance are all sourced from Eurostat. These data sources are described in detail in the [SOURCES.xlsx](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/data/SOURCES.xlsx) file referenced above.
 
 #### Aggregation of Shocks
 
