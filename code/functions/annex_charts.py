@@ -135,8 +135,8 @@ def plot_annex_charts(
             
             for i in range(3):
                 # Add grey fill for adjustment period
-                axs[i].axvspan(df_fanchart.index[1], df_fanchart.index[1+adjustment_period], alpha=0.3, color='grey')
-                axs[i].axvline(df_fanchart.index[1]+adjustment_period+10, color='black', ls='--', alpha=0.8, lw=1.5)
+                axs[i].axvspan(df_fanchart.index[0], df_fanchart.index[adjustment_period], alpha=0.3, color='grey')
+                axs[i].axvline(df_fanchart.index[0]+adjustment_period+10, color='black', ls='--', alpha=0.8, lw=1.5)
 
                 # Set labels and ticks
                 axs[i].set_xlabel('')

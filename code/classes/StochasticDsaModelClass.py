@@ -27,6 +27,7 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+# Set plotting style
 plt.rcParams.update({
     'axes.grid': True,
     'grid.color': 'black',
@@ -34,6 +35,8 @@ plt.rcParams.update({
     'grid.linestyle': '-',
     'font.size': 14
 })
+# import seaborn color palatte
+import seaborn as sns
 from scipy.optimize import minimize_scalar
 from statsmodels.tsa.api import VAR
 from numba import jit
@@ -46,7 +49,7 @@ class StochasticDsaModel(DsaModel):
 # ========================================================================================= #
     def __init__(self, 
                 country, # ISO code of country
-                start_year=2023, # start year of projection, first year is baseline value
+                start_year=2024, # start year of projection, first year is baseline value
                 end_year=2070, # end year of projection
                 adjustment_period=4, # number of years for linear spb_bca adjustment
                 adjustment_start_year=2025, # start year of linear spb_bca adjustment
@@ -110,7 +113,7 @@ class StochasticDsaModel(DsaModel):
 
             # If quarterly shock data is not available, set parameters to annual
             if self.df_shocks.empty: 
-                # print(f'No quarterly shock data available for {self.country}, using annual data instead.')
+                print(f'No quarterly shock data available for {self.country}, using annual data instead.')
                 self.shock_frequency = 'annual'
                 self.draw_period = self.stochastic_period
         
@@ -188,6 +191,13 @@ class StochasticDsaModel(DsaModel):
             size=(self.N, self.draw_period)
             )
         
+        # Set PB shocks during adjustment period to zero
+        if not hasattr(self, 'stochastic_pb_adjustment'): # attribute can be set if adjustment is already included
+            stochastic_within_adjustment = self.adjustment_end - self.stochastic_start + 1
+            if self.shock_frequency == 'quarterly': stochastic_within_adjustment *= 4
+            if stochastic_within_adjustment > 0:
+                self.shocks_sim_draws[:, :stochastic_within_adjustment, -1] = 0
+        
     def _draw_shocks_var(self):
         """
         Draw quarterly or annual shocks from a VAR model.
@@ -204,7 +214,8 @@ class StochasticDsaModel(DsaModel):
 
         # Estimate VAR model 
         varmodel = VAR(var_sample)
-        self.var = varmodel.fit(ic='bic')
+        lag_len = 1 # if self.shock_frequency == 'annual' else 4
+        self.var = varmodel.fit(lag_len) # .fit(ic='bic')
 
         # Extract parameters from the VAR results
         lags = self.var.k_ar
@@ -220,6 +231,15 @@ class StochasticDsaModel(DsaModel):
             chol_matrix = np.linalg.cholesky(cov_matrix)
             residual_draws = np.random.randn(self.N, self.draw_period, residuals.shape[1]) @ chol_matrix.T
 
+        # Set PB shocks during adjustment period to zero
+        if not hasattr(self, 'stochastic_pb_adjustment'): # attribute can be set if adjustment is already included
+            stochastic_within_adjustment = self.adjustment_end - self.stochastic_start + 1
+            if self.shock_frequency == 'quarterly': stochastic_within_adjustment *= 4
+            if stochastic_within_adjustment > 0:
+                residual_draws[:, :stochastic_within_adjustment, -1] = 0
+        else:
+            stochastic_within_adjustment = 0 # set to zero if adjustment is already included
+
         # Simulate shocks using numba
         self.shocks_sim_draws = np.zeros_like(residual_draws)
         construct_var_shocks(
@@ -229,7 +249,8 @@ class StochasticDsaModel(DsaModel):
             lags=lags,
             intercept=intercept, 
             coefs=coefs, 
-            residual_draws=residual_draws
+            residual_draws=residual_draws,
+            stochastic_within_adjustment=stochastic_within_adjustment
             )
 
         # Add zero exchange rate shock if it was removed before
@@ -297,11 +318,6 @@ class StochasticDsaModel(DsaModel):
         self.shocks_sim = np.stack([exr_eur_shocks, exr_usd_shocks, interest_rate_shocks, nominal_gdp_growth_shocks, primary_balance_shocks], axis=2)
         self.shocks_sim = np.transpose(self.shocks_sim, (0, 2, 1))
 
-        # If stochastic projection starts before adjustment end, set pb shock to zero during adjustment period
-        post_adjustment_period = self.projection_period - self.adjustment_end - 1
-        if self.stochastic_period > post_adjustment_period:
-            self.shocks_sim[:, 3, : -post_adjustment_period] = 0
-
     def _aggregate_shocks_annual(self):
         """
         Save annual into shock matrix, aggregate long term interest rate shocks.
@@ -353,11 +369,6 @@ class StochasticDsaModel(DsaModel):
         # Stack all shocks in a matrix
         self.shocks_sim = np.stack([exr_eur_shocks, exr_usd_shocks, interest_rate_shocks, nominal_gdp_growth_shocks, primary_balance_shocks], axis=2)
         self.shocks_sim = np.transpose(self.shocks_sim, (0, 2, 1))
-
-        # If stochastic projection starts before adjustment end, set pb shock to zero during adjustment period
-        post_adjustment_period = self.projection_period - self.adjustment_end - 1
-        if self.stochastic_period > post_adjustment_period:
-            self.shocks_sim[:, 3, : -post_adjustment_period] = 0
 
     def _combine_shocks_baseline(self):
         """
@@ -429,7 +440,7 @@ class StochasticDsaModel(DsaModel):
 #                                AUXILIARY METHODS                                          #
 # ========================================================================================= #
 
-    def fanchart(self, var='d', plot=True, save_plot=False, xlim=(2023, 2040)):
+    def fanchart(self, var='d', plot=True, save_plot=False, xlim=(2024, 2040), ylim=None, pct_line=False, figsize=(10, 6)):
         """
         Create a fanchart for the debt-to-GDP ratio or other variables. Saves data as df and plots if specified.
         """
@@ -452,21 +463,29 @@ class StochasticDsaModel(DsaModel):
 
         # Plot the results using fill between if plot is True
         if plot:
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[10], self.pcts_dict[90], color='dodgerblue', edgecolor=None, alpha=0.2, label='10th-90th percentile')
-            ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[20], self.pcts_dict[80], color='dodgerblue', edgecolor=None, alpha=0.3, label='20th-80th percentile')
-            ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[30], self.pcts_dict[70], color='dodgerblue', edgecolor=None, alpha=0.4, label='30th-70th percentile')
-            ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[40], self.pcts_dict[60], color='dodgerblue', edgecolor=None, alpha=0.7, label='40th-60th percentile')
-            ax.plot(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[50], alpha=1, ls='-', color='black', label='Median')
-            ax.plot(years, bl_var, ls='--', color='red', label='Baseline')
-
+            fig, ax = plt.subplots(figsize=figsize)
+            ax.plot(years, bl_var, ls='--', lw=3, color='red', label='Baseline', zorder=3)
+            ax.plot(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[50], alpha=1, ls='-', lw=3, color='black', label='Median', zorder=2)
+            if pct_line:
+                if not hasattr(self, 'prob_target'):
+                    self.prob_target = 0.7
+                pct = int((self.prob_target) * 100)
+                ax.plot(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[pct], color='darkgreen', linestyle=(0,(1,1)), lw=3.5, label=f'{pct} pct', zorder=1)
+            ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[40], self.pcts_dict[60], color='dodgerblue', edgecolor='none', lw=1, alpha=0.9, label='40-60 pct', zorder=0)
+            ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[30], self.pcts_dict[70], color='dodgerblue', edgecolor='none', lw=1, alpha=0.5, label='30-70 pct', zorder=0)
+            ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[20], self.pcts_dict[80], color='dodgerblue', edgecolor='none', lw=1, alpha=0.3, label='20-80 pct', zorder=0)
+            ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[10], self.pcts_dict[90], color='dodgerblue', edgecolor='none', lw=1, alpha=0.15, label='10-90 pct', zorder=0)
+            
             # Plot layout
             ax.legend(loc='best')
+            ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
             ax.xaxis.grid(False)
             ylabel = 'Debt (percent of GDP)' if var == 'd' else var
             ax.set_ylabel(ylabel)
             ax.set_title(f'{self.stochastic_period}-year fanchart for {self.country} (adjustment {self.adjustment_start_year}-{self.adjustment_end_year})')
             ax.set_xlim(xlim[0], xlim[1])
+            if ylim:
+                ax.set_ylim(ylim[0], ylim[1])
             plt.tight_layout()
             plt.show()
 
@@ -481,13 +500,66 @@ class StochasticDsaModel(DsaModel):
             self.pcts_dict[pct]})
             self.df_fanchart = self.df_fanchart.merge(df_pct, on='year', how='left')
 
+    def plot_shocks(self, hist=False, percentiles=False, sim=False, figsize=(15, 10)):
+        """
+        Create a figure with subplots for each shock variable as a line plot or histogram.
+        Shocks are based on historical data or simulation. If 'percentiles' is True, the function 
+        adds quantile lines: vertical for histograms and horizontal for line plots (time-series 
+        percentiles for simulation data).
+        """
+        if not hasattr(self, 'prob_target'):
+            self.prob_target = 0.7
+
+        fig, axes = plt.subplots(3, 2, figsize=figsize)
+        axes = axes.flatten()
+        q_list = [50, int((1 - self.prob_target) * 100), int(self.prob_target * 100)]
+        ls_list = ['-', '--', '-.']
+        
+        # For simulation, plot the mean time series; otherwise use historical data.
+        data = (pd.DataFrame(self.shocks_sim_draws.mean(axis=0), columns=self.df_shocks.columns)
+                if sim else self.df_shocks)
+
+        for i, col in enumerate(data.columns):
+            if hist:
+                # For histograms, flatten simulation draws if needed.
+                series = (pd.Series(self.shocks_sim_draws[:, :, i].flatten())
+                        if sim else data[col])
+                if np.all(np.abs(series) < 1e-6):
+                    series = series.round(0)
+
+                series.plot(kind='hist', ax=axes[i], title=col, bins=50)
+                if percentiles:
+                    for q, ls in zip(q_list, ls_list):
+                        q_val = np.percentile(series, q)                        
+                        axes[i].axvline(q_val, color='red', linestyle=ls,
+                                        label=f'{"median" if q==50 else f"{q} pct"}')
+            else:
+                # Plot the mean time series.
+                data[col].plot(ax=axes[i], title=col, label='')
+                if percentiles:
+                    for q, ls in zip(q_list, ls_list):
+                        if sim:
+                            # Compute quantile as a time series across simulation draws.
+                            q_val = np.percentile(self.shocks_sim_draws[:, :, i], q, axis=0)
+                            axes[i].plot(data[col].index, q_val, color='red', linestyle=ls,
+                                        label=f'{"median" if q==50 else f"{q} pct"}')
+                        else:
+                            q_val = np.percentile(data[col], q)
+                            axes[i].axhline(q_val, color='red', linestyle=ls,
+                                            label=f'{"median" if q==50 else f"{q} pct"}')
+        axes[0].legend()
+
+        plt.tight_layout()
+        plt.show()
+
+
 # ========================================================================================= #
 #                              STOCHASTIC OPTIMIZATION METHODS                              # 
 # ========================================================================================= #
 
     def find_spb_stochastic(self, 
-                            bounds=(-10, 10), 
-                            stochastic_criteria=['debt_explodes', 'debt_above_60'],
+                            bounds=(-5, 5), 
+                            stochastic_criteria=['debt_declines', 'debt_below_60'],
                             stochastic_criterion_start_year=None,
                             print_update=False,
                             prob_target=None):
@@ -511,7 +583,7 @@ class StochasticDsaModel(DsaModel):
         
         if not hasattr(self, 'prob_target'):
             if prob_target is None: 
-                self.prob_target = 0.3
+                self.prob_target = 0.7
             else:
                 self.prob_target = prob_target
         
@@ -519,11 +591,8 @@ class StochasticDsaModel(DsaModel):
             self.stochastic_criterion_start = 0
         else:
             self.stochastic_criterion_start = stochastic_criterion_start_year - self.stochastic_start_year  
-
-        #if self.country in ['DNK']: bounds = (-6,0) # Denmark's target function has large local minima for high values
         
         self.stochastic_optimization_dict = {}
-
 
         # Initial projection
         self.project(
@@ -558,17 +627,17 @@ class StochasticDsaModel(DsaModel):
         self.spb_bounds = bounds
         self.stochastic_optimization_dict = {}
 
-        # Optimize _target_pb to find b_target that ensures prob_debt_above_60 or prob_debt_explodes == prob_target
-        self.spb_target = minimize_scalar(self._target_spb_decline, method='bounded', bounds=self.spb_bounds).x
+        # Optimize _target_pb to find b_target that ensures prob_debt_below_60 or prob_debt_declines == prob_target
+        self.spb_target = minimize_scalar(self._stochastic_target, method='bounded', bounds=self.spb_bounds).x
         
         # Store results in a dataframe
         self.df_stochastic_optimization = pd.DataFrame(self.stochastic_optimization_dict).T
         
         return self.spb_target
 
-    def _target_spb_decline(self, spb_target):
+    def _stochastic_target(self, spb_target):
         """
-        Returns zero if primary balance ensures prop_debt_explodes == prob_target or prob_debt_above_60 == prob_target.
+        Returns zero if primary balance ensures prop_debt_declines == prob_target or prob_debt_below_60 == prob_target.
         """
         # Simulate the debt-to-GDP ratio with the given primary balance target
         self.project(
@@ -584,56 +653,78 @@ class StochasticDsaModel(DsaModel):
 
         # Simulate debt ratio and calculate probability of debt exploding or exceeding 60
         self._simulate_debt()
-        self.prob_debt_explodes()
-        self.prob_debt_above_60()
-
-        # Print spb_target for each iteration and clean print after
-        if self.print_update:
-            print(
-                f'spb: {spb_target:.2f}, prob_debt_explodes: {self.prob_explodes:.2f}, prob_debt_above_60: {self.prob_above_60:.2f}', 
-                end='\r'
-            )
         self.stochastic_optimization_dict[spb_target] = {}
-        self.stochastic_optimization_dict[spb_target]['prob_debt_explodes'] = self.prob_explodes
-        self.stochastic_optimization_dict[spb_target]['prob_debt_above_60'] = self.prob_above_60
+        print_msg = f'spb: {spb_target:.2f}'
+        if 'debt_declines' in self.stochastic_criteria:
+            self.prob_debt_declines()
+            self.stochastic_optimization_dict[spb_target]['prob_debt_declines'] = self.prob_declines
+            print_msg += f', prob_debt_declines: {self.prob_declines:.2f}'
+        if 'debt_stable' in self.stochastic_criteria:
+            self.prob_debt_stable()
+            self.stochastic_optimization_dict[spb_target]['prob_debt_stable'] = self.prob_stable
+            print_msg += f', prob_debt_stable: {self.prob_stable:.2f}'
+        if 'debt_below_60' in self.stochastic_criteria:
+            self.prob_debt_below_60()
+            self.stochastic_optimization_dict[spb_target]['prob_debt_below_60'] = self.prob_below_60
+            print_msg += f', prob_debt_below_60: {self.prob_below_60:.2f}'
+        if self.print_update:
+            print(print_msg, end='\r')
 
         # Optimize for more probable target    
-        if 'debt_explodes' in self.stochastic_criteria and 'debt_above_60' in self.stochastic_criteria:
-            min_prob = np.min([self.prob_explodes, self.prob_above_60])
-        elif 'debt_explodes' in self.stochastic_criteria:
-            min_prob = self.prob_explodes
-        elif 'debt_above_60' in self.stochastic_criteria:
-            min_prob = self.prob_above_60
+        if 'debt_declines' in self.stochastic_criteria and 'debt_below_60' in self.stochastic_criteria:
+            max_prob = np.max([self.prob_declines, self.prob_below_60])
+        elif 'debt_stable' in self.stochastic_criteria and 'debt_below_60' in self.stochastic_criteria:
+            max_prob = np.max([self.debt_stable, self.prob_below_60])
+        elif 'debt_declines' in self.stochastic_criteria:
+            max_prob = self.prob_declines
+        elif 'debt_stable' in self.stochastic_criteria:
+            max_prob = self.prob_stable
+        elif 'debt_below_60' in self.stochastic_criteria:
+            max_prob = self.prob_below_60
         else:
-            raise ValueError('Unknown stochastic criteria!')        
+            raise ValueError('Unknown stochastic criteria or combination!')        
         
-        # Penalty term to avoid local minima at upper bound
-        penalty = np.max([0,spb_target/10]) if np.isclose(min_prob, 0) else 0
+        # Penalty term to avoid local minima at probability bounds
+        if (np.isclose(max_prob, 0)) or (np.isclose(max_prob, 1)):
+            penalty = np.max([0,spb_target/10]) 
+        else:
+            penalty = 0
         
-        return np.abs(min_prob - self.prob_target) + penalty
+        return np.abs(max_prob - self.prob_target) + penalty
 
-    def prob_debt_explodes(self):
+    def prob_debt_declines(self):
         """
         Calculate the probability of the debt-to-GDP ratio exploding.
         """
         # Call the Numba JIT function with converted self variables
-        self.prob_explodes = prob_debt_explodes_jit(
+        self.prob_declines = prob_debt_declines_jit(
             N=self.N, 
             d_sim=self.d_sim, 
             stochastic_criterion_start=self.stochastic_criterion_start
             )
-        return self.prob_explodes
+        return self.prob_declines
     
-    def prob_debt_above_60(self):
+    def prob_debt_stable(self):
+        """
+        Calculate the probability of the debt-to-GDP ratio stabalizing by end of projection.
+        """
+        # Call the Numba JIT function with converted self variables
+        self.prob_stable = prob_debt_stable_jit(
+            N=self.N, 
+            d_sim=self.d_sim
+            )
+        return self.prob_stable
+    
+    def prob_debt_below_60(self):
         """
         Calculate the probability of the debt-to-GDP ratio exceeding 60 in 2038/2041.
         """
         # Call the Numba JIT function with converted self variables
-        self.prob_above_60 = prob_debt_above_60_jit(
+        self.prob_below_60 = prob_debt_below_60_jit(
             N=self.N, 
             d_sim=self.d_sim, 
             )
-        return self.prob_above_60
+        return self.prob_below_60
     
     def plot_target_func(self):
         """
@@ -641,7 +732,7 @@ class StochasticDsaModel(DsaModel):
         """
         results = {}
         for x in np.linspace(self.spb_bounds[0], self.spb_bounds[1], 100):
-            y = self._target_spb_decline(spb_target=x)
+            y = self._stochastic_target(spb_target=x)
             results[x] = y
         results = pd.Series(results)
         results.plot()
@@ -656,7 +747,7 @@ class StochasticDsaModel(DsaModel):
                          deficit_resilience=True,
                          stochastic=True,
                          print_results=True,
-                         stochastic_criteria=['debt_explodes', 'debt_above_60'],
+                         stochastic_criteria=['debt_declines', 'debt_below_60'],
                          save_df=False):
         """
         Find the structural primary balance that meets all criteria after deficit has been brought below 3% and debt safeguard is satisfied.
@@ -681,12 +772,10 @@ class StochasticDsaModel(DsaModel):
         # Apply EDP
         if edp: 
             self._apply_edp()
-        # elif self.ob[self.adjustment_start - 1] < -3:
-        #     self.edp_period = 0
-        #     self.edp_end = self.adjustment_start - 1
+
         else:
             self.edp_period = 0
-            self.edp_end = self.adjustment_start - 2 # equals 2023, year before the reference year (2024), meaning the debt safeguard is applied from the first adjustment year (2025)
+            self.edp_end = 0
         
         # Apply debt safeguard
         if debt_safeguard: 
@@ -1044,7 +1133,94 @@ class StochasticDsaModel(DsaModel):
                 if -3.5 > self.ob_sim[n, i+1] or (-3 > self.ob_sim[n, i+1] and -3 > self.ob_sim[n, i+2]):
                     prob_excessive_deficit[i] += 1
         return prob_excessive_deficit / self.N  
-  
+    
+    def var_forecast_pb(self, forecast_start_year=None):
+        """
+        Create conditional forecast of primary balance based on VAR estimates and deterministic forecasts.
+        """
+        # Set parameters
+        if forecast_start_year == None:
+            self.forecast_start_year = self.adjustment_start_year
+        else:
+            self.forecast_start_year = forecast_start_year
+        self.forecast_horizon = self.end_year - forecast_start_year
+
+        # project and simulate to ensure all attributes are set
+        self.project()
+        self.simulate()
+
+        # Set shock frequency to annual and get shock data
+        original_shock_frequency = self.shock_frequency
+        self.shock_frequency = 'annual'
+        self._get_shock_data()
+        var_sample = self.df_shocks[[
+            'INTEREST_RATE_ST', 
+            'INTEREST_RATE_LT',
+            'NOMINAL_GDP_GROWTH', 
+            'PRIMARY_BALANCE'
+            ]]
+
+        # Adjust exchange rate data for EA countries and USA
+        # ea_countries = ['AUT', 'BEL', 'BGR', 'DNK', 'HRV', 'CYP', 'EST', 'FIN',
+        #                 'FRA', 'DEU', 'GRC', 'IRL', 'ITA', 'LVA', 'LTU', 'LUX',
+        #                 'MLT', 'NLD', 'PRT', 'SVK', 'SVN', 'ESP']
+        # if self.country in ea_countries:
+        #     var_sample = var_sample.drop(columns=['EXR_EUR'])
+        # elif self.country == 'USA':
+        #     var_sample = var_sample.drop(columns=['EXR_USD'])
+
+        # Fit VAR model \.fit(ic='bic')
+        self.var = VAR(var_sample).fit(ic='bic')
+
+        # Set shock frequency back to original
+        self.shock_frequency = original_shock_frequency
+
+        # Extract lags and coefficients from the VAR model.
+        lags = self.var.k_ar
+        pb_coefs = self.var.params['PRIMARY_BALANCE'].values  # shape: (1 + p * len(var_names),)
+
+        # Initialize forecasted primary balance and steps steps.
+        self.forecast_pb = np.copy(self.pb)
+        self.forecast_spb = np.copy(self.spb)
+        self.forecast_pb_step = np.diff(self.pb, prepend=np.nan)
+
+        # Calcualte conditional forecast for each year and lag.
+        for t, y in enumerate(
+            range(self.forecast_start_year, self.end_year+1), 
+            start = self.forecast_start_year - self.start_year):
+            # Construct the regressor vector X:
+            X = [1]
+            # For each lag, append the value of each variable at time t-lag.
+            for l in range(1, lags + 1):
+                for var in self.var.params.columns:
+
+                    # For pb, use the actual value before the forecast period.
+                    if var == 'PRIMARY_BALANCE':
+                        if self.start_year + t <= forecast_start_year:
+                            value = self.pb[t-l] - self.pb[t-l-1]
+                        else:
+                            value = self.forecast_pb_step[t-l]
+
+                    # For other variables, always use actual values.
+                    # elif var == 'EXR_EUR':
+                    #     value = self.exr_eur[t-l] - self.exr_eur[t-l-1]
+                    # elif var == 'EXR_USD':
+                        value = self.exr_usd[t-l] - self.exr_usd[t-l-1]
+                    elif var == 'INTEREST_RATE_ST':
+                        value = self.i_st[t-l] - self.i_st[t-l-1]
+                    elif var == 'INTEREST_RATE_LT':
+                        value = self.i_lt[t-l] - self.i_lt[t-l-1]
+                    elif var == 'NOMINAL_GDP_GROWTH':
+                        value = self.ng[t-l] - self.ng[t-l-1]
+                    
+                    # Append the value to the regressor vector.
+                    X.append(value)
+
+            # Calculate the forecasted primary balance for year t.        
+            X = np.array(X)
+            self.forecast_pb_step[t] = np.dot(X, pb_coefs)
+            self.forecast_pb[t] = self.forecast_pb[t-1] + self.forecast_pb_step[t]
+
 # ========================================================================================= #
 #                                NUMBA OPTIMIZED FUNCTIONS                                  #
 # ========================================================================================= #
@@ -1062,16 +1238,29 @@ def vecmatmul(vec, mat):
     return result
 
 @jit(nopython=True)
-def construct_var_shocks(N, draw_period, shocks_sim_draws, lags, intercept, coefs, residual_draws):
+def construct_var_shocks(N, draw_period, shocks_sim_draws, lags, intercept, coefs, residual_draws, stochastic_within_adjustment):
     """
     Simulate the shocks for the baseline variables.
     """
+    # set all coefs for pb, which is pos -1 to zero
+    coef_pb_zero = coefs.copy()
+    coef_pb_zero[:,-1,:] = 0
+    coef_pb_zero[:,:,-1] = 0
+    intercept_pb_zero = intercept.copy()
+    intercept_pb_zero[-1] = 0
+
     for n in range(N):
         for t in range(draw_period):
-            shock = intercept.copy()
+            if t < stochastic_within_adjustment:
+                use_coefs = coef_pb_zero
+                use_intercept = intercept_pb_zero
+            else:
+                use_coefs = coefs
+                use_intercept = intercept
+            shock = use_intercept.copy()
             for lag in range(1, lags + 1):
                 if t - lag >= 0:
-                    shock += vecmatmul(shocks_sim_draws[n, t - lag, :], coefs[lag - 1])
+                    shock += vecmatmul(shocks_sim_draws[n, t - lag, :], use_coefs[lag - 1])
             shocks_sim_draws[n, t, :] = shock + residual_draws[n, t, :]
     return shocks_sim_draws
 
@@ -1110,28 +1299,56 @@ def simulate_debt_jit(N, stochastic_period, D_share_domestic, D_share_eur, D_sha
                         + D_share_eur * d_sim[n, t-1] * (1 + iir_sim[n, t]/100) / (1 + ng_sim[n, t]/100) * (exr_eur_sim[n, t]) / (exr_eur_sim[n, t-1]) \
                         + D_share_usd * d_sim[n, t-1] * (1 + iir_sim[n, t]/100) / (1 + ng_sim[n, t]/100) * (exr_usd_sim[n, t]) / (exr_usd_sim[n, t-1]) \
                         - pb_sim[n, t] + sf_sim[n, t]
-            
+
 @jit(nopython=True)
-def prob_debt_explodes_jit(N, d_sim, stochastic_criterion_start):
+def mean_jit(arr):
+    """
+    Calculate the mean of an array.
+    """
+    total = 0.0
+    count = 0
+    for i in range(arr.shape[0]):
+        total += arr[i]
+        count += 1
+    return total / count
+        
+@jit(nopython=True)
+def prob_debt_declines_jit(N, d_sim, stochastic_criterion_start):
     """
     Calculate the probability of the debt-to-GDP ratio exploding.
     """
-    prob_explodes = 0
+    prob_declines = 0
+    d_start = mean_jit(d_sim[:, stochastic_criterion_start])
     for n in range(N):
-        if d_sim[n, stochastic_criterion_start] < d_sim[n, -1]:
-            prob_explodes += 1
-    return prob_explodes / N
+        if d_start >= d_sim[n, -1]:
+            prob_declines += 1
+    return prob_declines / N
 
 @jit(nopython=True)
-def prob_debt_above_60_jit(N, d_sim):
+def prob_debt_stable_jit(N, d_sim):
+    """
+    Calculate the probability of the debt-to-GDP ratio stabalizing by projection end.
+    """
+    d_penultimate_sorted = np.sort(d_sim[:, -5])
+    d_last_sorted = np.sort(d_sim[:, -1])    
+    n = d_sim.shape[0]
+    prob_debt_stable = 0
+    for i in range(10000):
+        idx = int((i / 10000) * (n - 1))
+        if d_penultimate_sorted[idx] >= d_last_sorted[idx]:
+            prob_debt_stable += 1
+    return prob_debt_stable / 10000
+
+@jit(nopython=True)
+def prob_debt_below_60_jit(N, d_sim):
     """
     Calculate the probability of the debt-to-GDP ratio exceeding 60
     """
-    prob_debt_above_60 = 0
+    prob_debt_below_60 = 0
     for n in range(N):
-        if 60 < d_sim[n, -1]:
-            prob_debt_above_60 += 1
-    return prob_debt_above_60 / N
+        if d_sim[n, -1] <= 60:
+            prob_debt_below_60 += 1
+    return prob_debt_below_60 / N
 
 @jit(nopython=True)
 def simulate_deficit_jit(N, stochastic_period, pb_sim, iir_sim, ng_sim, d_sim, ob_sim):

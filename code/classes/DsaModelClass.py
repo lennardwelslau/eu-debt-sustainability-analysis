@@ -34,6 +34,8 @@ import numpy as np
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
+
+
 class DsaModel:
 
     # ========================================================================================= #
@@ -43,7 +45,7 @@ class DsaModel:
     def __init__(
             self,
             country,  # ISO code of country
-            start_year=2023,  # start year of projection, first year is baseline value
+            start_year=2024,  # start year of projection, first year is baseline value
             end_year=2070,  # end year of projection
             adjustment_period=4,  # number of years for linear spb_bca adjustment
             adjustment_start_year=2025,  # start year of linear spb_bca adjustment
@@ -191,7 +193,7 @@ class DsaModel:
         """
         # Set base directory relative to code folder
         self._base_dir = '../' * (os.getcwd().split(os.sep)[::-1].index('code')+1)
-        self.df_deterministic_data = pd.read_csv(self._base_dir + 'data/InputData/deterministic_data_november.csv') 
+        self.df_deterministic_data = pd.read_csv(self._base_dir + 'data/InputData/deterministic_data_2025_03.csv') 
         self.df_deterministic_data = self.df_deterministic_data.loc[self.df_deterministic_data['COUNTRY'] == self.country].set_index('YEAR').iloc[:,1:]
 
     def _clean_rgdp_pot(self):
@@ -202,11 +204,12 @@ class DsaModel:
             
             # potential growth is based on OGWG up to T+5, long-run estimates from 2033, interpoalted in between
             self.rg_pot_bl[t] = self.df_deterministic_data.loc[y, 'POTENTIAL_GDP_GROWTH']
-            
+           
             # potential GDP up to T+5 are from OGWG, after that projected based on growth rate
-            if t <= 5:
-                self.rgdp_pot_bl[t] = self.df_deterministic_data.loc[y, 'POTENTIAL_GDP']
-            else:
+            self.rgdp_pot_bl[t] = self.df_deterministic_data.loc[y, 'POTENTIAL_GDP']
+            
+            # after T+5, potential GDP is projected based on growth rates form AWG
+            if pd.isna(self.df_deterministic_data.loc[y, 'POTENTIAL_GDP']):
                 self.rgdp_pot_bl[t] = self.rgdp_pot_bl[t - 1] * (1 + self.rg_pot_bl[t] / 100) 
 
         # Set initial values to baseline
@@ -220,11 +223,11 @@ class DsaModel:
         for t, y in enumerate(range(self.start_year, self.end_year + 1)):
             
             # potential GDP up to T+5 are from OGWG, after that projected based on growth rate
-            if t <= 5:
-                self.rgdp_bl[t] = self.df_deterministic_data.loc[y, 'REAL_GDP']
-                self.rg_bl[t] = self.df_deterministic_data.loc[y, 'REAL_GDP_GROWTH']
+            self.rgdp_bl[t] = self.df_deterministic_data.loc[y, 'REAL_GDP']
+            self.rg_bl[t] = self.df_deterministic_data.loc[y, 'REAL_GDP_GROWTH']
 
-            else:
+            # if real GDP is missing not available from forecast, set it to potential GDP
+            if pd.isna(self.df_deterministic_data.loc[y, 'REAL_GDP']):
                 self.rgdp_bl[t] = self.rgdp_pot[t]
                 self.rg_bl[t] = self.rg_pot[t]
 
@@ -380,7 +383,7 @@ class DsaModel:
 
         # Get primary expenditure share
         self.expenditure_share = self.df_deterministic_data.loc[2024, 'PRIMARY_EXPENDITURE_SHARE']
-
+    
     def _clean_implicit_interest_rate(self):
         """
         Clean implicit interest rate.
@@ -809,10 +812,10 @@ class DsaModel:
         Calculate stock-flow adjustment as share of NGDP
         For specification of exceptions see DSM2023
         """
-        for t in range(self.projection_period):
+        for t, y in enumerate(range(self.start_year, self.end_year + 1)):
 
             # For Luxembourg and Finland stock flow is extended beyond T+2 using pension balance ratio
-            if self.country in ['LUX']: #, include FInland here if using Commission assumptions
+            if self.country in ['LUX']: #, include Finland here if using Commission assumptions
                 
                 if t < 3:
                     self.sf[t] = self.SF[t] / self.ngdp[t] * 100
@@ -835,28 +838,31 @@ class DsaModel:
                     2024: 2.5, 2025: 1.3, 2026: 1.7, 2027: 1.4, 2028: 1.4, 2029: 1.0, 2030: 1.1, 2031: 1.5, 2032: 1.5, 
                     2033: 1.4, 2034: 1.2, 2035: 1.1, 2036: 0.9, 2037: 0.8, 2038: 0.6, 2039: 0.5, 2040: 0.3, 2041: 0.2
                 }
-                if t in range(2024-self.start_year,len(sf_fin)+1):
+                if y in range(2024,2042):
                     self.sf[t] = sf_fin[t+self.start_year]
 
-            # For Greece stock-flow is based on deferal of ESM/EFSF interest payments
+            # updated sf for Greece based on 2024 MTFP EC numbers, comment out if using approach described in DSM 2024 below
             elif self.country == 'GRC':
+                sf_grc = {
+                    2024: -1.1, 2025: 1.5, 2026: -0.8, 2027: -0.9, 2028: -1.0, 2029: -1.0, 2030: -1.0, 2031: -1.1, 2032: -1.1, 
+                    2033: 0.2, 2034: 0.2, 2035: 0.2, 2036: 0.2, 2037: 0.2, 2038: 0.2, 2039: 0.2, 2040: 0.2, 2041: 0.2
+                }
+                if y in range(2024,2042):
+                    self.sf[t] = sf_grc[t+self.start_year]
 
-                # Stock flow is 5.4% in 2022
-                if t == 0:
-                    self.sf[t] = - 5.4
+                # # We linearly converge to a cumulative sum of SF of -11.1% of GDP in 2032
+                # SF_cum_2032 = -11.1 / 100 * self.ngdp[2032-self.start_year]
 
-                # Increases to 11.1% in 2032 in cumulative terms
-                elif t > 0 and t <= 9:
-                    self.sf[t] = (- (11.1 / 100 * self.ngdp[9] 
-                                     + np.sum(self.SF[:t])) 
-                                     / (10-t) 
-                                     / self.ngdp[t] * 100)
+                # # Cumulate until 2032
+                # if t > 0 and y <= 2032:
+                #     self.SF[t] = (SF_cum_2032 - np.sum(self.SF[:t])) / (2032 - y + 1)
+                
+                # # Cumulative sum goes to zero by end_year
+                # elif y > 2032:
+                #     self.SF[t] = - np.sum(self.SF[:t-1]) / (self.end_year - y + 1)
 
-                # Decline to zero by projection end, 2070
-                elif t > 9: 
-                    self.sf[t] = (- np.sum(self.SF[:10]) 
-                                  / (self.projection_period - 9) 
-                                  / self.ngdp[t] * 100)
+                # # sf is simply SF / ngdp
+                # self.sf[t] = self.SF[t] / self.ngdp[t] * 100
             
             # For other countries stock flow is simply based on Ameco data
             else:
@@ -1005,7 +1011,7 @@ class DsaModel:
         """
         Calculate gross financing needs
         """
-        self.GFN[t] = np.max([self.interest[t] + self.repayment[t] - self.PB[t] + self.SF[t], 0])
+        self.GFN[t] = self.interest[t] + self.repayment[t] - self.PB[t] + self.SF[t]
 
     def _calc_debt_stock(self, t):
         """
@@ -1326,8 +1332,11 @@ class DsaModel:
         if hasattr(self, 'predefined_spb_steps'):
             debt_safeguard_start = max(self.adjustment_start + len(self.predefined_spb_steps) - 1, self.edp_end + 1)
             
-        else:
+        elif self.edp_period > 0:
             debt_safeguard_start = self.edp_end + 1
+        
+        else:
+            debt_safeguard_start = self.adjustment_start - 1
 
         return (self.d[debt_safeguard_start] - self.d[self.adjustment_end]
                 >= debt_safeguard_decline * (self.adjustment_end - debt_safeguard_start))

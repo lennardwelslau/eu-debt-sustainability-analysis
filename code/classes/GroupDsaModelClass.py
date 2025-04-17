@@ -29,10 +29,6 @@ plt.rcParams.update({
 })
 
 class GroupDsaModel:
-
-    # ========================================================================================= #
-    #                                   INIITIALIZE MODEL                                       #
-    # ========================================================================================= #
     def __init__(self, countries, **dsa_params):
         """
         Initialize the GroupDsaModel instance.
@@ -67,9 +63,6 @@ class GroupDsaModel:
                 model_params['country'] = country
                 self.models[country] = DSA(**model_params)
 
-    # ========================================================================================= #
-    #                                   MODEL METHODS                                           #
-    # ========================================================================================= #
     def update_params(self, update_params):
         """
         Update the attributes of each DSA model.
@@ -219,9 +212,6 @@ class GroupDsaModel:
                 if discard_models:
                     del self.models[country]
 
-    # ========================================================================================= #
-    #                                   SAVE RESULTS                                            #
-    # ========================================================================================= #
     def save_spb(self, folder=None, file=None):
         """
         Save the SPB targets for each instance to an Excel file.
@@ -285,7 +275,7 @@ class GroupDsaModel:
         for col in col_order:
             if col not in self.df_spb.columns:
                 self.df_spb[col] = np.nan
-        self.df_spb = self.df_spb[col_order].sort_values(['adjustment_period', 'country']).round(3)
+        self.df_spb = self.df_spb[col_order].sort_values(['adjustment_period', 'country']).round(3).dropna(axis=1, how='all')
 
         # Save the DataFrame to Excel if required
         if folder is None:
@@ -299,7 +289,7 @@ class GroupDsaModel:
         self.df_spb.to_excel(file_path, index=False)
         print(f"SPB table saved to {file_path}")
 
-        return self.df_spb.dropna(axis=1, how='all')
+        return self.df_spb
 
     def save_dfs(self, folder=None, file=None):
         """
@@ -327,9 +317,6 @@ class GroupDsaModel:
                     df.to_excel(writer, sheet_name=sheet_name)
         print(f"DataFrames saved to {file_path}")
 
-    # ========================================================================================= #
-    #                                   HELPER METHODS                                          #
-    # ========================================================================================= #
     def get_country_model(self, country):
         """
         Return the dictionary of DSA models for the given country.
@@ -359,7 +346,8 @@ class GroupDsaModel:
             'HUN': 'Hungary', 'IRL': 'Ireland', 'ITA': 'Italy', 'LVA': 'Latvia',
             'LTU': 'Lithuania', 'LUX': 'Luxembourg', 'MLT': 'Malta', 'NLD': 'Netherlands',
             'POL': 'Poland', 'PRT': 'Portugal', 'ROU': 'Romania', 'SVK': 'Slovakia',
-            'SVN': 'Slovenia', 'ESP': 'Spain', 'SWE': 'Sweden'
+            'SVN': 'Slovenia', 'ESP': 'Spain', 'SWE': 'Sweden', 'GBR': 'United Kingdom',
+            'USA': 'United States'
         }
         return country_code_dict.get(country.upper(), None)
 
@@ -422,23 +410,20 @@ class GroupDsaModel:
                     avg_df[attr] = sum(
                         scenario_df_dict[country][attr] * weight_series_dict[country]
                         for country in scenario_df_dict
-                    ) / gdp_total
+                        ) / gdp_total
                 else:
                     # For non-lowercase columns, compute the row-wise sum across countries.
                     avg_df[attr] = sum(
                         scenario_df_dict[country][attr]
                         for country in scenario_df_dict
-                    )
+                        )
             except Exception as e:
                 # Print an error message if any issue occurs during the calculation for the column.
                 print(f"Error in calculating average for attribute: {attr}: {e}")
         
         return avg_df
 
-# ========================================================================================= #
-#                                   FOR PARALLEL PROCESSING                                 #                                        
-# ========================================================================================= #
-
+# Module-level helper function for binding SPB
 def _find_spb_binding_task(args):
     """
     Helper function to run the binding SPB analysis for one model.
@@ -450,11 +435,6 @@ def _find_spb_binding_task(args):
     - find_binding_params: dict of additional parameters for find_spb_binding
     """
     country, model, edp_countries, find_binding_params = args
-    
-    # Run and save the 'no_policy_change' results
-    model.project()
-    df_npc = model.df(all=True)
-
     # Determine whether to apply EDP for this country
     edp = country in edp_countries
 
@@ -470,11 +450,13 @@ def _find_spb_binding_task(args):
     binding_params = model.binding_parameter_dict
     df_fanchart = model.df_fanchart
 
-    # Add the 'no_policy_change' results to the dictionary
-    df_dict['no_policy_change'] = df_npc
+    # Run the projection step and add the 'no_policy_change' results
+    model.project()
+    df_dict['no_policy_change'] = model.df(all=True)
 
     return country, spb_dict, df_dict, binding_params, df_fanchart
 
+# Module-level helper function for stochastic SPB
 def _find_spb_stochastic_task(args):
     """
     Helper function to run the stochastic SPB analysis for one model.
