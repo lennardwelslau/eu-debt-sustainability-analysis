@@ -1,0 +1,7 @@
+axes.grid : True
+
+grid.color : black
+grid.alpha : 0.25
+grid.linestyle : --
+
+font.size : 14
