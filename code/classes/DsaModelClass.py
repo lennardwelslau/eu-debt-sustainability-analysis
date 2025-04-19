@@ -34,6 +34,7 @@ import numpy as np
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
+from classes.exceptions import MissingData
 
 
 class DsaModel:
@@ -201,19 +202,26 @@ class DsaModel:
         Clean baseline real potential growth.
         """
         for t, y in enumerate(range(self.start_year, self.end_year + 1)):
-            
-            # potential growth is based on OGWG up to T+5, long-run estimates from 2033, interpoalted in between
-            self.rg_pot_bl[t] = self.df_deterministic_data.loc[y, 'POTENTIAL_GDP_GROWTH']
-           
+            row = self.df_deterministic_data.loc[y]
+
+            # potential growth is based on OGWG up to T+5, long-run estimates from 2033, interpolated in between
+            rg = row.POTENTIAL_GDP_GROWTH
+            if pd.isna(rg):
+                raise MissingData("potential GDP growth", y, t)
+            self.rg_pot_bl[t] = rg
+
             # potential GDP up to T+5 are from OGWG, after that projected based on growth rate
-            self.rgdp_pot_bl[t] = self.df_deterministic_data.loc[y, 'POTENTIAL_GDP']
-            
-            # after T+5, potential GDP is projected based on growth rates form AWG
-            if pd.isna(self.df_deterministic_data.loc[y, 'POTENTIAL_GDP']):
-                self.rgdp_pot_bl[t] = self.rgdp_pot_bl[t - 1] * (1 + self.rg_pot_bl[t] / 100) 
+            rgdp = row.POTENTIAL_GDP
+            if pd.isna(rgdp) and t == 0:
+                raise MissingData("potential GDP", y, t)
+            elif pd.isna(rgdp):
+                # after T+5, potential GDP is projected based on growth rates form AWG
+                prev = self.rgdp_pot_bl[t - 1]
+                rgdp = prev * (1 + rg / 100)
+            self.rgdp_pot_bl[t] = rgdp
 
         # Set initial values to baseline
-        self.rg_pot = np.copy(self.rg_pot_bl)   
+        self.rg_pot = np.copy(self.rg_pot_bl)
         self.rgdp_pot = np.copy(self.rgdp_pot_bl)
 
     def _clean_rgdp(self):
