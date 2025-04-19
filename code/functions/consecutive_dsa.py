@@ -2,13 +2,6 @@
 import pandas as pd
 pd.options.display.float_format = "{:,.3f}".format
 import matplotlib.pyplot as plt
-plt.rcParams.update({
-    'axes.grid': True,
-    'grid.color': 'black',
-    'grid.alpha': 0.25,
-    'grid.linestyle': '-',
-    'font.size': 14
-})
 
 # Import DSA model class and stochastic subclass
 from classes import StochasticDsaModel as DSA

@@ -27,14 +27,6 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-# Set plotting style
-plt.rcParams.update({
-    'axes.grid': True,
-    'grid.color': 'black',
-    'grid.alpha': 0.25,
-    'grid.linestyle': '-',
-    'font.size': 14
-})
 # import seaborn color palatte
 import seaborn as sns
 from scipy.optimize import minimize_scalar

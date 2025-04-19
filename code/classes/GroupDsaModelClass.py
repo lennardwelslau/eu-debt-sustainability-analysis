@@ -17,16 +17,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from tqdm import tqdm 
-
-# Set plotting style
-plt.rcParams.update({
-    'axes.grid': True,
-    'grid.color': 'black',
-    'grid.alpha': 0.25,
-    'grid.linestyle': '-',
-    'font.size': 14
-})
+from tqdm import tqdm
 
 class GroupDsaModel:
     def __init__(self, countries, **dsa_params):

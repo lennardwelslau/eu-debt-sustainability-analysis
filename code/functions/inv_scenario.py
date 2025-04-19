@@ -6,13 +6,6 @@ pd.options.display.float_format = "{:,.3f}".format
 import pickle
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
-plt.rcParams.update({
-    'axes.grid': True,
-    'grid.color': 'black',
-    'grid.alpha': 0.25,
-    'grid.linestyle': '-',
-    'font.size': 14
-})
 base_dir = '../' * (os.getcwd().split(os.sep)[::-1].index('code')+1)
 
 # Import DSA model class and stochastic subclass
