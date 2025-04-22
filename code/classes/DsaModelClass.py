@@ -193,6 +193,11 @@ class DsaModel:
         self.df_deterministic_data = pd.read_csv(self._base_dir + 'data/InputData/deterministic_data_2025_03.csv') 
         self.df_deterministic_data = self.df_deterministic_data.loc[self.df_deterministic_data['COUNTRY'] == self.country].set_index('YEAR').iloc[:,1:]
 
+        # Check if data is available in start year
+        first_year = self.df_deterministic_data.index[self.df_deterministic_data.index >= self.start_year][0]
+        if first_year > self.start_year:
+            raise ValueError(f"Data for {self.country} is only available from {first_year}.")
+
     def _clean_rgdp_pot(self):
         """
         Clean baseline real potential growth.
