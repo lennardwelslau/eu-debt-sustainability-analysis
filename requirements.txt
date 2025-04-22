@@ -1,0 +1,8 @@
+matplotlib
+numba
+numpy
+pandas
+scipy
+seaborn
+statsmodels
+tqdm

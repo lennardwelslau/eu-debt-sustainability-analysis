@@ -6,13 +6,6 @@ import pandas as pd
 pd.options.display.float_format = "{:,.3f}".format
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
-plt.rcParams.update({
-    'axes.grid': True,
-    'grid.color': 'black',
-    'grid.alpha': 0.25,
-    'grid.linestyle': '-',
-    'font.size': 14
-})
 import seaborn as sns
 
 def get_country_name(iso):
