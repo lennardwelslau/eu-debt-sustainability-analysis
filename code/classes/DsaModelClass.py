@@ -528,7 +528,7 @@ class DsaModel:
         self.scenario = scenario
 
         # Project debt dynamics
-        self._project_net_expenditure_path()
+        self._project_adjustment_path()
         self._project_gdp()
         self._project_stock_flow()
         self._project_spb()
@@ -608,7 +608,7 @@ class DsaModel:
         else:
             self.post_spb_steps = post_spb_steps
 
-    def _project_net_expenditure_path(self):
+    def _project_adjustment_path(self):
         """
         Project structural primary balance, excluding ageing cost
         """
