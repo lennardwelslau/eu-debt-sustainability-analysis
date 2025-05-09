@@ -1028,8 +1028,8 @@ class DsaModel:
         D_issuance_share_st = D_theoretical_issuance_st / (D_theoretical_issuance_st + D_theoretical_issuance_lt)  # share of st in gfn
         
         # Calculate short-term and long-term debt issuance
-        self.D_st[t] = D_issuance_share_st * self.GFN[t]
-        self.D_new_lt[t] = (1 - D_issuance_share_st) * self.GFN[t]
+        self.D_st[t] = np.max([D_issuance_share_st * self.GFN[t], 0])
+        self.D_new_lt[t] = np.max([(1 - D_issuance_share_st) * self.GFN[t], 0])
         self.D_lt[t] = np.max([self.D_lt[t - 1] - self.repayment_lt[t] - self.repayment_lt_bond[t] + self.D_new_lt[t] , 0])
 
     def _calc_balance(self, t):
