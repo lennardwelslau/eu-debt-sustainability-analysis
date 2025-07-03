@@ -51,6 +51,7 @@ class DsaModel:
             fiscal_multiplier_persistence=3, # persistence of fiscal multiplier in years
             fiscal_multiplier_type='ec', # type of fiscal multiplier, commission or pers version 
             bond_data=False, # Use bond level data for repayment profile
+            deterministic_data_file='deterministic_data_2025_05.csv',  # path to deterministic data file
         ):
 
         # Initialize model parameters
@@ -70,6 +71,7 @@ class DsaModel:
         self.bond_data = bond_data  # True if bond level data is available
         self.policy_change = False # Turns true if projected with spb target/steps
         self.scenario = None # scenario parameter
+        self.deterministic_data_file = deterministic_data_file  # path to deterministic data file
 
         # Initiate model variables as numpy arrays
         nan_vars = [
@@ -190,7 +192,7 @@ class DsaModel:
         """
         # Set base directory relative to code folder
         self._base_dir = '../' * (os.getcwd().split(os.sep)[::-1].index('code')+1)
-        self.df_deterministic_data = pd.read_csv(self._base_dir + 'data/InputData/deterministic_data_2025_03.csv') 
+        self.df_deterministic_data = pd.read_csv(self._base_dir + 'data/InputData/' + self.deterministic_data_file,) 
         self.df_deterministic_data = self.df_deterministic_data.loc[self.df_deterministic_data['COUNTRY'] == self.country].set_index('YEAR').iloc[:,1:]
 
         # Check if data is available in start year
