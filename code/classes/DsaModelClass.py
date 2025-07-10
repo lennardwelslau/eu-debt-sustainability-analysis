@@ -1180,7 +1180,7 @@ class DsaModel:
                 self.spb_target += 0.001
                 self.project(spb_target=self.spb_target, edp_steps=self.edp_steps)
 
-    def find_spb_deterministic(self, criterion, bounds=(-10, 10), steps=[0.01, 0.0001]):
+    def find_spb_deterministic(self, criterion, bounds=(-10, 10), tol=0.0001):
         """
         Find the primary balance that ensures complience with deterministic criteria
         """
@@ -1210,11 +1210,12 @@ class DsaModel:
                 self.edp_steps = None
 
         # Run deterministic optimization
-        return self._deterministic_optimization(criterion=criterion, bounds=bounds, steps=steps)
+        return self._deterministic_optimization(criterion=criterion, bounds=bounds, tol=tol)
 
-    def _deterministic_optimization(self, criterion, bounds, steps):
+    def _deterministic_optimization(self, criterion, bounds, tol):
         """
-        Main loop of optimizer 
+        Main loop of optimizer using a bisection method.
+        Finds the smallest spb_target that satisfies the given criterion.
         """
         # If debt safeguard and EDP lasts until penultimate adjustment year, debt safeguard satisfied by default
         if (criterion == 'debt_safeguard'
@@ -1226,50 +1227,58 @@ class DsaModel:
             )
             return self.spb_target
 
-        # Initialize spb_target to the lower bound
-        spb_target = bounds[0]
+        low, high = bounds[0], bounds[1]
 
-        # Optimization loop
-        while spb_target <= bounds[1]:
-            try:
-                # Project the model with the current spb_target
-                self._get_spb_steps(criterion=criterion, spb_target=spb_target,)
-                self.project(
-                    edp_steps=self.edp_steps,
-                    spb_steps=self.spb_steps,
-                    scenario=self.scenario
-                )
+        # Check lower bound
+        self._get_spb_steps(criterion=criterion, spb_target=low)
+        self.project(
+            edp_steps=self.edp_steps,
+            spb_steps=self.spb_steps,
+            scenario=self.scenario
+        )
+        assert not self._deterministic_condition(criterion=criterion), (
+            f"Deterministic criteria satisfied at lower bound ({low}). "
+        )
 
-                # If condition is met, enter nested loop and decrease spb_target in small steps
-                if self._deterministic_condition(criterion=criterion):
-                    while (self._deterministic_condition(criterion=criterion)
-                           and spb_target >= bounds[0]):
-                        current_spb_target = spb_target
-                        spb_target -= steps[1]
-                        self._get_spb_steps(criterion=criterion, spb_target=spb_target)
-                        self.project(
-                            edp_steps=self.edp_steps,
-                            spb_steps=self.spb_steps,
-                            scenario=self.scenario
-                        )
-                    break
+        # Check upper bound
+        self._get_spb_steps(criterion=criterion, spb_target=high)
+        self.project(
+            edp_steps=self.edp_steps,
+            spb_steps=self.spb_steps,
+            scenario=self.scenario
+        )
+        assert self._deterministic_condition(criterion=criterion), (
+            f"Deterministic criteria not satisfied at higher bound ({high}). "
+        )
 
-                # If condition is not met, increase spb_target in large steps
-                current_spb_target = spb_target
-                spb_target += steps[0]
+        # Initialize result with the satisfying upper bound
+        result_spb_target = high 
 
-            except BaseException:
-                raise  # Exception(f'No solution found for {criterion}')
+        # Bisection loop
+        while (high - low) > tol:
+            mid = (low + high) / 2
+            self._get_spb_steps(criterion=criterion, spb_target=mid)
+            self.project(
+                edp_steps=self.edp_steps,
+                spb_steps=self.spb_steps,
+                scenario=self.scenario
+            )
+            if self._deterministic_condition(criterion=criterion):
+                result_spb_target = mid
+                high = mid
+            else:
+                low = mid
+        
+        # Set final spb_target and return the relevant value
+        self.spb_target = result_spb_target
 
-        # If spb_target exceeds upper bound, raise exception
-        if spb_target > bounds[1] - steps[1]:
-            raise  # Exception(f'No solution found for {criterion}')
-
-        # Return last valid spb_target as optimal spb and project with target
-        self.spb_target = current_spb_target
-        spb_target -= steps[1]
-        self._get_spb_steps(criterion=criterion, spb_target=spb_target)
-
+        self._get_spb_steps(criterion=criterion, spb_target=self.spb_target)
+        self.project(
+            edp_steps=self.edp_steps,
+            spb_steps=self.spb_steps,
+            scenario=self.scenario
+        ) # Project with the final spb_target to ensure self.spb_bca is updated
+        
         return self.spb_bca[self.adjustment_end]
 
     def _get_spb_steps(self, criterion, spb_target):
@@ -1382,10 +1391,10 @@ class DsaModel:
         for t in range(self.deficit_resilience_start, self.adjustment_end + 1):
             if ((self.d[t] > 60 or self.ob[t] < -3)
                 and self.sb[t] <= self.deficit_resilience_target[t - self.adjustment_start] 
-                and self.spb_steps[t - self.adjustment_start] < self.deficit_resilience_step - 1e-8):  # 1e-8 tolerance for floating point errors
+                and self.spb_steps[t - self.adjustment_start] < self.deficit_resilience_step - 1e-8):  # 1e-8 tol for floating point errors
                 self.deficit_resilience_steps[t - self.adjustment_start] = self.spb_steps[t - self.adjustment_start]
                 while (self.sb[t] <= self.deficit_resilience_target[t - self.adjustment_start]
-                       and self.deficit_resilience_steps[t - self.adjustment_start] < self.deficit_resilience_step - 1e-8):  # 1e-8 tolerance for floating point errors
+                       and self.deficit_resilience_steps[t - self.adjustment_start] < self.deficit_resilience_step - 1e-8):  # 1e-8 tol for floating point errors
                     self.deficit_resilience_steps[t - self.adjustment_start] += 0.001
                     self.project(
                         spb_target=self.spb_target,
