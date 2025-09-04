@@ -1022,17 +1022,17 @@ class DsaModel:
         Calculate new debt stock and distribution of new short and long-term issuance
         """
         # Total debt stock is equal to last period stock minus repayment plus financing needs
-        self.D[t] = np.max([self.D[t - 1] - self.repayment[t] + self.GFN[t], 0])
+        self.D[t] = np.max([self.D[t - 1] - self.repayment[t] + self.GFN[t], 1e-8])  # floor to avoid division by zero
 
         # Distribution of short-term and long-term debt in financing needs
         D_theoretical_issuance_st = self.D_share_st * self.D[t]  # st debt to keep share equal to D_share_st
-        D_theoretical_issuance_lt = np.max([(1 - self.D_share_st) * self.D[t] - (self.D_lt[t - 1] - self.repayment_lt[t] - self.repayment_lt_bond[t]), 0]) # lt debt to keep share equal to 1 - D_share_st, non-negative
+        D_theoretical_issuance_lt = np.max([(1 - self.D_share_st) * self.D[t] - (self.D_lt[t - 1] - self.repayment_lt[t] - self.repayment_lt_bond[t]), 1e-8]) # lt debt to keep share equal to 1 - D_share_st, non-negative
         D_issuance_share_st = D_theoretical_issuance_st / (D_theoretical_issuance_st + D_theoretical_issuance_lt)  # share of st in gfn
         
         # Calculate short-term and long-term debt issuance
-        self.D_st[t] = np.max([D_issuance_share_st * self.GFN[t], 0])
-        self.D_new_lt[t] = np.max([(1 - D_issuance_share_st) * self.GFN[t], 0])
-        self.D_lt[t] = np.max([self.D_lt[t - 1] - self.repayment_lt[t] - self.repayment_lt_bond[t] + self.D_new_lt[t] , 0])
+        self.D_st[t] = np.max([D_issuance_share_st * self.GFN[t], 1e-8])
+        self.D_new_lt[t] = np.max([(1 - D_issuance_share_st) * self.GFN[t], 1e-8])
+        self.D_lt[t] = np.max([self.D_lt[t - 1] - self.repayment_lt[t] - self.repayment_lt_bond[t] + self.D_new_lt[t] , 1e-8])
 
     def _calc_balance(self, t):
         """
@@ -1051,7 +1051,7 @@ class DsaModel:
             self.D_share_domestic * self.d[t - 1] * (1 + self.iir[t] / 100) / (1 + self.ng[t] / 100)
             + self.D_share_eur * self.d[t - 1] * (1 + self.iir[t] / 100) / (1 + self.ng[t] / 100) * (self.exr_eur[t] / self.exr_eur[t - 1])
             + self.D_share_usd * self.d[t - 1] * (1 + self.iir[t] / 100) / (1 + self.ng[t] / 100) * (self.exr_usd[t] / self.exr_usd[t - 1])
-            - self.pb[t] + self.sf[t], 0
+            - self.pb[t] + self.sf[t], 1e-8
         ])
         
     # ========================================================================================= #
@@ -1247,6 +1247,7 @@ class DsaModel:
             spb_steps=self.spb_steps,
             scenario=self.scenario
         )
+
         assert self._deterministic_condition(criterion=criterion), (
             f"Deterministic criteria not satisfied at higher bound ({high}). "
         )
