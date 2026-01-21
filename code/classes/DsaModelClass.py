@@ -51,7 +51,7 @@ class DsaModel:
             fiscal_multiplier_persistence=3, # persistence of fiscal multiplier in years
             fiscal_multiplier_type='ec', # type of fiscal multiplier, commission or pers version 
             bond_data=False, # Use bond level data for repayment profile
-            deterministic_data_file='deterministic_data_2025_05.csv',  # path to deterministic data file
+            deterministic_data_file='deterministic_data_2025_10.csv',  # path to deterministic data file
         ):
 
         # Initialize model parameters
