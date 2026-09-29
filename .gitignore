@@ -1,3 +1,12 @@
 __pycache__/
+*.pyc
 .ipynb_checkpoints/
 .python-version
+.DS_Store
+~$*
+
+# User-generated input workbooks
+data/InputData/dsa_inputs_user*.xlsx
+
+# Reference files downloaded by the data pipeline (Ageing Report, Debt Sustainability Monitor)
+data/RawData/reference/

@@ -1,7 +1,13 @@
+dbnomics
+ipython
+jinja2
+jupyter
 matplotlib
 numba
 numpy
+openpyxl
 pandas
+requests
 scipy
 seaborn
 statsmodels
