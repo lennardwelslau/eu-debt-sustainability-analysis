@@ -98,9 +98,9 @@ class GroupDsaModel:
         Run the binding SPB analysis for each country.
 
         Parameters:
-            edp_countries (list or str): Countries for which the EDP is applied. 'input': countries with
-                             EXCESSIVE_DEFICIT_PROCEDURE = 1 in the input workbook. None (default): all countries,
-                             the EDP then applies wherever the deficit exceeds 3% of GDP.
+            edp_countries (list or str): Countries in EDP. None or 'input' (default): EDP status from the input workbook
+                             (EXCESSIVE_DEFICIT_PROCEDURE); a list: the EDP applies to the listed countries only. Use
+                             edp_status='infer' to let the model predict the EDP from a projected deficit above 3% of GDP.
             parallel (bool): If True (default), run tasks in parallel using ProcessPoolExecutor;
                              if False, process tasks sequentially.
             max_workers (int): Maximum number of worker processes (default: number of CPUs).
@@ -109,10 +109,9 @@ class GroupDsaModel:
         """
         find_binding_params.setdefault('print_results', False)
         if edp_countries == 'input':
-            edp_countries = [c for c, m in self.models.items() if m.params.get('EXCESSIVE_DEFICIT_PROCEDURE', 0) == 1]
-            print(f'Countries in EDP according to input data: {edp_countries}')
-        elif edp_countries is None:
-            edp_countries = list(self.models)
+            in_edp = [c for c, m in self.models.items() if m.params.get('EXCESSIVE_DEFICIT_PROCEDURE', 0) == 1]
+            print(f'Countries in EDP according to input data: {in_edp}')
+            edp_countries = None
         tasks = [(country, model, edp_countries, find_binding_params) for country, model in list(self.models.items())]
         print(f'Running find_spb_binding for {len(tasks)} countries (parallel={parallel})')
         self._run_tasks(_find_spb_binding_task, tasks, parallel, max_workers, discard_models)
@@ -366,8 +365,13 @@ def _find_spb_binding_task(args):
     """
     country, model, edp_countries, find_binding_params = args
 
-    # Run the binding SPB analysis, applying the EDP only to the given countries
-    model.find_spb_binding(save_df=True, edp=country in edp_countries, **find_binding_params)
+    # Run the binding SPB analysis. EDP status from the input data, or the given countries in EDP
+    params = dict(find_binding_params)
+    if edp_countries is not None:
+        params['edp'] = country in edp_countries
+        if params['edp']:
+            params.setdefault('edp_status', True)
+    model.find_spb_binding(save_df=True, **params)
 
     # Extract the results from the model, with fanchart data for the binding path if stochastic
     results = {

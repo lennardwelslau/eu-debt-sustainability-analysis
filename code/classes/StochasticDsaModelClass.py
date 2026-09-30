@@ -31,7 +31,7 @@ from scipy.optimize import minimize_scalar
 from statsmodels.tsa.api import VAR
 from numba import jit
 from classes import DsaModel
-from classes.DsaModelClass import DEFAULT_INPUT_FILE
+from classes.DsaModelClass import DEFAULT_INPUT_FILE, EDP_SPB_TERMS_LAST_YEAR
 from data_pipeline import read_shocks
 from classes.ResultsTables import display_tables, criterion_label, COUNTRY_NAMES
 
@@ -40,6 +40,7 @@ BINDING_RULES = {
     'dsa_criteria': 'default',
     'stochastic_criteria': ['debt_declines', 'debt_below_60'],
     'edp': 'default',
+    'edp_status': 'input',
     'debt_safeguard': 'default',
     'deficit_resilience': 'default',
     'frontloading': True,
@@ -49,6 +50,7 @@ COMMISSION_RULES = {
     'dsa_criteria': 'commission',
     'stochastic_criteria': ['debt_declines'],
     'edp': 'commission',
+    'edp_status': 'input',
     'debt_safeguard': 'commission',
     'deficit_resilience': 'commission',
     'frontloading': False,
@@ -755,10 +757,12 @@ class StochasticDsaModel(DsaModel):
                                 (deficit and debt below 60% only) for countries with debt < 60% and deficit < 3% in T;
                                 non-negative adjustment for the reference trajectory, at most -1 pp. per year otherwise
             stochastic_criteria list of 'debt_declines', 'debt_stable', 'debt_below_60'
-            edp                 'default': triggered by a projected deficit above 3%, 0.5 pp. SPB steps followed by
-                                0.5 pp. SB steps; 'commission': EDP status in T from the input file, abrogated after two
-                                years with deficit below 3%, min. 0.5 pp. step after a year with deficit above 3% (in SB
-                                terms from 2028); None: no EDP
+            edp                 'default': minimum steps of 0.5 pp. while the deficit exceeds 3%, front-loaded;
+                                'commission': min. 0.5 pp. step after a year with deficit above 3%, EDP abrogated after two
+                                years with deficit below 3%. Both in SPB terms until 2027 and in SB terms from 2028
+                                (EDP_SPB_TERMS_LAST_YEAR); None: no EDP
+            edp_status          EDP status in T: 'input' (input file, as in the Commission prior guidance), True, False,
+                                or 'infer' (predicted by the model from a projected deficit above 3%)
             debt_safeguard      'default': average decline from the year the EDP is projected to be abrogated (the year
                                 after the deficit falls below 3%, if it stays below 3%, as in the Commission sheets) or T
                                 to adjustment end, 1 pp. if debt in T > 90%, 0.5 pp. otherwise; 'commission': by
@@ -784,9 +788,11 @@ class StochasticDsaModel(DsaModel):
                 delattr(self, attr)
 
         # Model settings used by project() during the optimization, restored afterwards
-        settings = {'frontloading': self.frontloading, 'edp_active': getattr(self, 'edp_active', True)}
+        settings = {'frontloading': self.frontloading, 'edp_active': getattr(self, 'edp_active', True),
+                    'edp_status': getattr(self, 'edp_status', 'input')}
         self.frontloading = self.rules['frontloading']
         self.edp_active = self.rules['edp'] is not None
+        self.edp_status = self.rules['edp_status']
 
         # Default rules follow the sequential DWZ (2024) implementation, other rules a constant annual adjustment
         default = (all(self.rules[k] in (BINDING_RULES[k], None)
@@ -824,13 +830,16 @@ class StochasticDsaModel(DsaModel):
                 out[key] = value
         if stochastic_criteria is not None:
             out['stochastic_criteria'] = stochastic_criteria
+        if not (isinstance(out['edp_status'], (bool, np.bool_)) or out['edp_status'] in ('input', 'infer')):
+            raise ValueError(f"edp_status must be 'input', 'infer', True or False, got {out['edp_status']!r}")
         return out
 
     def _find_spb_binding_default(self, stochastic, print_results, save_df):
         """
         Binding SPB target with the default rules: DSA target, then EDP, debt safeguard and deficit resilience.
         """
-        edp = self.rules['edp'] is not None
+        # EDP applies if the country is in EDP in T; with edp_status='infer', find_edp decides from the projected deficit
+        edp = self.rules['edp'] is not None and (self.edp_status == 'infer' or self._in_edp_T())
         debt_safeguard = self.rules['debt_safeguard'] is not None
         deficit_resilience = self.rules['deficit_resilience'] is not None
 
@@ -935,7 +944,7 @@ class StochasticDsaModel(DsaModel):
         # 2. EDP with default rule: minimum steps from the EDP optimiser, kept fixed below
         self.edp_default_steps = np.full(n, np.nan)
         self.edp_period, self.edp_end = 0, s - 2
-        if rules['edp'] == 'default':
+        if rules['edp'] == 'default' and (self.edp_status == 'infer' or self._in_edp_T()):
             self.find_edp(spb_target=self.binding_spb_target)
             self.edp_default_steps = np.copy(self.edp_steps)
 
@@ -1062,7 +1071,7 @@ class StochasticDsaModel(DsaModel):
                 status = self._edp_status()
                 if self.rules['edp'] == 'commission' and status[t - 1] == 1 and self.ob[t - 1] <= -3.05:
                     edp_steps[k] = 0.5 + ((self.interest_ratio[t] - self.interest_ratio[t - 1])
-                                          if self.start_year + t >= 2028 else 0)
+                                          if self.start_year + t > EDP_SPB_TERMS_LAST_YEAR else 0)
                 if self.rules['deficit_resilience'] == 'commission' and self.sb[t - 1] <= -1.55:
                     resilience_steps[k] = resilience_step
                 self.project(spb_steps=spb_steps, edp_steps=edp_steps, deficit_resilience_steps=resilience_steps)
@@ -1086,9 +1095,12 @@ class StochasticDsaModel(DsaModel):
         status = np.zeros(self.projection_period)
         if self.rules['edp'] == 'commission':
             edp_T = self.params.get('EXCESSIVE_DEFICIT_PROCEDURE', np.nan)
-            if np.isnan(edp_T):
+            if isinstance(self.edp_status, (bool, np.bool_)):
+                edp_T = int(self.edp_status)
+            elif self.edp_status == 'infer' or np.isnan(edp_T):
+                if np.isnan(edp_T):
+                    warnings.warn(f'{self.country}: EDP status missing in the input file, set from the deficit in T')
                 edp_T = int(self.ob[0] <= -3.05)
-                warnings.warn(f'{self.country}: EDP status missing in the input file, set from the deficit in T ({edp_T})')
             status[0] = int(edp_T)
             ob_before = self._fiscal_balance_before_start()
             for j in range(1, self.projection_period):

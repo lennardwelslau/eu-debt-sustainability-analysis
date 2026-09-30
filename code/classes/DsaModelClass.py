@@ -35,6 +35,11 @@ from data_pipeline import read_country, latest_input_file, apply_overrides
 # or 'dsa_inputs_2025_10.xlsx' to replicate results based on the legacy October 2025 input data.
 DEFAULT_INPUT_FILE = None
 
+# EDP benchmark: minimum annual adjustment of 0.5% of GDP in structural balance terms (Regulation (EC) No 1467/97,
+# Art. 3(4)). During the transition period 2025-2027, the benchmark may be adjusted for the increase in interest payments
+# (Regulation (EU) 2024/1264, recital 23): until this year, the minimum step applies to the SPB.
+EDP_SPB_TERMS_LAST_YEAR = 2027
+
 
 class DsaModel:
 
@@ -85,6 +90,7 @@ class DsaModel:
         self.bond_data = bond_data  # True if bond level data is available
         self.policy_change = False # Turns true if projected with spb target/steps
         self.frontloading = True # EDP and deficit resilience steps front-load the adjustment (see find_spb_binding)
+        self.edp_status = 'input' # EDP status in T: 'input' (input file), 'infer' (predicted by the model: deficit above 3%), True or False
         self.scenario = None # scenario parameter
         self.input_file = input_file  # input workbook
         self.overrides = overrides  # user inputs applied on top of the input workbook
@@ -1064,9 +1070,9 @@ class DsaModel:
         # If deficit excessive, increase spb by 0.5 annually until deficit below 3%
         if self.ob[self.adjustment_start] < self.edp_target:
 
-            # Set start indices for spb and pb adjustment parts of EDP
+            # Set start indices for SPB and SB parts of the EDP: SPB terms until EDP_SPB_TERMS_LAST_YEAR, SB terms after
             self.edp_spb_index = 0
-            self.edp_sb_index = 3
+            self.edp_sb_index = int(np.clip(EDP_SPB_TERMS_LAST_YEAR + 1 - self.adjustment_start_year, 0, self.adjustment_period))
 
             # Calculate EDP adjustment steps for spb, sb, and final periods
             self._calc_edp_spb()
@@ -1310,14 +1316,27 @@ class DsaModel:
         """
         return np.all(self.ob[self.adjustment_end:self.adjustment_end + 11] >= -3)
 
+    def _in_edp_T(self):
+        """
+        Whether the country is in EDP in T, depending on self.edp_status:
+            'input' (default)  EDP status in the input file (EXCESSIVE_DEFICIT_PROCEDURE), as in the Commission prior
+                               guidance; if missing (legacy workbooks), inferred as with 'infer'
+            'infer'            predicted by the model: deficit above 3% of GDP in T, or EDP steps found by find_edp
+            True / False       set by the user
+        """
+        status = getattr(self, 'edp_status', 'input')
+        if isinstance(status, (bool, np.bool_)):
+            return bool(status)
+        flag = self.params.get('EXCESSIVE_DEFICIT_PROCEDURE', np.nan)
+        if status == 'input' and not np.isnan(flag):
+            return flag == 1
+        return getattr(self, 'edp_period', 0) > 0 or self.ob[self.adjustment_start - 1] < -3
+
     def _edp_applies(self):
         """
-        Whether a country is in EDP in T: flagged in the input file, EDP steps found by find_edp, or deficit in T above
-        3% of GDP. If the EDP flag in the input file is missing (legacy workbooks), only the deficit is used.
+        Whether the EDP applies: EDP rules active (see find_spb_binding) and country in EDP in T (see _in_edp_T).
         """
-        edp_flag = self.params.get('EXCESSIVE_DEFICIT_PROCEDURE', 0) == 1
-        return (getattr(self, 'edp_active', True)
-                and (edp_flag or getattr(self, 'edp_period', 0) > 0 or self.ob[self.adjustment_start - 1] < -3))
+        return getattr(self, 'edp_active', True) and self._in_edp_T()
 
     def _debt_safeguard_start(self):
         """

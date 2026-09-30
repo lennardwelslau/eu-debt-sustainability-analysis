@@ -111,10 +111,13 @@ build_inputs(mode='commission', prior_guidance='2024')   # or 'latest' (default)
 | `frontloading` | EDP and deficit resilience steps front-load the adjustment; later steps are reduced to keep the SPB target | Constant annual adjustment; minimum steps are added on top where they bind |
 | `dsa_criteria` | Per scenario, debt declines or is below 60%; deficit below 3% | Debt declines in all scenarios (and stochastically) or is below 60% in all scenarios; technical information for countries with debt < 60% and deficit < 3% |
 | `stochastic_criteria` | Debt declines or is below 60% with 70% probability | Debt declines with 70% probability |
-| `edp` | Triggered by a projected deficit above 3% (or `edp_countries`) | EDP status in T from the input file, abrogated after two years with deficit below 3% |
+| `edp_status` | EDP status in T from the input file; `'infer'`: predicted by the model from a projected deficit above 3% | EDP status in T from the input file |
+| `edp` | Minimum steps of 0.5 pp. while the deficit exceeds 3%, front-loaded | Min. 0.5 pp. step after a year with a deficit above 3%, added on top; abrogated after two years with deficit below 3% |
 | `debt_safeguard` | Average decline from the year the EDP is projected to be abrogated (as in the Commission sheets), or T without EDP, by debt in T | By start-of-year debt band, averaged over adjustment years outside the EDP |
 | `deficit_resilience` | Steps raised until the structural deficit is below 1.5% in the same year | Step after a year with a structural deficit above 1.55% |
 | `grid` | Exact SPB target | Annual adjustment rounded up to 0.01 pp. |
+
+In both versions, the EDP benchmark applies to the SPB until 2027 and to the structural balance from 2028 (Regulation (EU) 2024/1264, recital 23).
 
 Results are displayed as pandas tables in notebooks (`print_results=True`) and stored in `model.binding_tables`; `model.key_results()` returns key variables with readable labels. For several countries, `GroupDsaModel.summary()` combines the results in one table and `GroupDsaModel.save_results(folder)` writes one Excel workbook (README, Summary, SPB targets, Adjustment paths, debt by scenario, and one sheet per country with key variables). `save_dfs` still exports all raw model variables.
 
