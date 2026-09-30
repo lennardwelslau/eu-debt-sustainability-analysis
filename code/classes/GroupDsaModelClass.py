@@ -18,6 +18,7 @@
 import os
 import time
 import warnings
+import numpy as np
 import pandas as pd
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
@@ -93,7 +94,8 @@ class GroupDsaModel:
             if discard_models:
                 del self.models[country]
 
-    def find_spb_binding(self, edp_countries=None, parallel=True, max_workers=None, discard_models=False, **find_binding_params):
+    def find_spb_binding(self, edp_countries=None, parallel=True, max_workers=None, discard_models=False, seed=None,
+                         **find_binding_params):
         """
         Run the binding SPB analysis for each country.
 
@@ -105,6 +107,8 @@ class GroupDsaModel:
                              if False, process tasks sequentially.
             max_workers (int): Maximum number of worker processes (default: number of CPUs).
             discard_models (bool): If True, delete the model from memory after processing.
+            seed (int): Seed of the random number generator, set for each country before its run, so that the
+                        stochastic results are reproducible (also in parallel). None (default): no seed.
             **find_binding_params: dict of additional parameters for find_spb_binding.
         """
         find_binding_params.setdefault('print_results', False)
@@ -112,7 +116,7 @@ class GroupDsaModel:
             in_edp = [c for c, m in self.models.items() if m.params.get('EXCESSIVE_DEFICIT_PROCEDURE', 0) == 1]
             print(f'Countries in EDP according to input data: {in_edp}')
             edp_countries = None
-        tasks = [(country, model, edp_countries, find_binding_params) for country, model in list(self.models.items())]
+        tasks = [(country, model, edp_countries, seed, find_binding_params) for country, model in list(self.models.items())]
         print(f'Running find_spb_binding for {len(tasks)} countries (parallel={parallel})')
         self._run_tasks(_find_spb_binding_task, tasks, parallel, max_workers, discard_models)
 
@@ -145,7 +149,8 @@ class GroupDsaModel:
             warnings.warn(f'Tasks failed for {len(self.failed)} countries (see .failed), results exclude them: '
                           + '; '.join(f'{c}: {e}' for c, e in self.failed.items()))
 
-    def find_spb_stochastic(self, store_as='stochastic', parallel=True, max_workers=None, discard_models=False, **find_stochastic_params):
+    def find_spb_stochastic(self, store_as='stochastic', parallel=True, max_workers=None, discard_models=False, seed=None,
+                            **find_stochastic_params):
         """
         Run the stochastic SPB analysis for each country.
 
@@ -155,9 +160,10 @@ class GroupDsaModel:
                              if False, process tasks sequentially.
             max_workers (int): Maximum number of worker processes (default: number of CPUs).
             discard_models (bool): If True, delete the model from memory after processing.
+            seed (int): Seed of the random number generator, set for each country before its run. None (default): no seed.
             **find_stochastic_params: dict of additional parameters for find_spb_stochastic.
         """
-        tasks = [(country, model, store_as, find_stochastic_params) for country, model in list(self.models.items())]
+        tasks = [(country, model, store_as, seed, find_stochastic_params) for country, model in list(self.models.items())]
         print(f'Running find_spb_stochastic for {len(tasks)} countries (parallel={parallel})')
         self._run_tasks(_find_spb_stochastic_task, tasks, parallel, max_workers, discard_models)
 
@@ -361,9 +367,12 @@ def _find_spb_binding_task(args):
     - country: the country code (string)
     - model: the model instance
     - edp_countries: list of countries for which EDP should be applied
+    - seed: seed of the random number generator (None: no seed)
     - find_binding_params: dict of additional parameters for find_spb_binding
     """
-    country, model, edp_countries, find_binding_params = args
+    country, model, edp_countries, seed, find_binding_params = args
+    if seed is not None:
+        np.random.seed(seed)
 
     # Run the binding SPB analysis. EDP status from the input data, or the given countries in EDP
     params = dict(find_binding_params)
@@ -399,9 +408,12 @@ def _find_spb_stochastic_task(args):
     - country: the country code (string)
     - model: the model instance
     - store_as: key to use for saving the result in the dictionary
+    - seed: seed of the random number generator (None: no seed)
     - find_stochastic_params: dict of additional parameters for find_spb_stochastic
     """
-    country, model, store_as, find_stochastic_params = args
+    country, model, store_as, seed, find_stochastic_params = args
+    if seed is not None:
+        np.random.seed(seed)
     model.find_spb_stochastic(**find_stochastic_params)
     model.fanchart(plot=False)
     return country, {

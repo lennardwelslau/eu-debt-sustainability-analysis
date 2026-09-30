@@ -9,12 +9,12 @@
 #    the data_pipeline package) and fill methodological anchors (e.g. T+10 and T+30 market rates).
 # 2. Projection methods: project growth (incl. fiscal multiplier effects), the primary balance,
 #    interest rates and debt dynamics for given adjustment steps and scenarios.
-# 3. Optimization methods: find the SPB target that meets a deterministic criterion, the EDP path,
-#    the debt sustainability safeguard and the deficit resilience safeguard.
+# 3. Optimization methods: find the SPB target that meets a deterministic DSA criterion
+#    (find_spb_deterministic).
 # 4. Auxiliary methods: results as DataFrames.
 #
-# The StochasticDsaModel subclass adds stochastic projections and the integrated optimizer
-# find_spb_binding.
+# The StochasticDsaModel subclass adds stochastic projections and the EU fiscal rules (FiscalRules:
+# find_spb_binding, EDP, debt sustainability and deficit resilience safeguards).
 #
 # For comments and suggestions please contact lennard.welslau[at]gmail[dot]com
 #
@@ -34,11 +34,6 @@ from data_pipeline import read_country, latest_input_file, apply_overrides
 # Use 'dsa_inputs_commission_2024.xlsx' to reproduce the Commission reference trajectories of the 2024 prior guidance,
 # or 'dsa_inputs_2025_10.xlsx' to replicate results based on the legacy October 2025 input data.
 DEFAULT_INPUT_FILE = None
-
-# EDP benchmark: minimum annual adjustment of 0.5% of GDP in structural balance terms (Regulation (EC) No 1467/97,
-# Art. 3(4)). During the transition period 2025-2027, the benchmark may be adjusted for the increase in interest payments
-# (Regulation (EU) 2024/1264, recital 23): until this year, the minimum step applies to the SPB.
-EDP_SPB_TERMS_LAST_YEAR = 2027
 
 
 class DsaModel:
@@ -90,8 +85,8 @@ class DsaModel:
         self.bond_data = bond_data  # True if bond level data is available
         self.policy_change = False # Turns true if projected with spb target/steps
         self.frontloading = True # EDP and deficit resilience steps front-load the adjustment (see find_spb_binding)
-        self.edp_status = 'input' # EDP status in T: 'input' (input file), 'infer' (predicted by the model: deficit above 3%), True or False
         self.scenario = None # scenario parameter
+        self.debt_condition = 'declines_or_below_60' # debt criterion of the deterministic scenarios (see find_spb_deterministic)
         self.input_file = input_file  # input workbook
         self.overrides = overrides  # user inputs applied on top of the input workbook
 
@@ -1053,131 +1048,11 @@ class DsaModel:
     #                               OPTIMIZATION METHODS                                        #
     # ========================================================================================= #
 
-    def find_edp(self, spb_target=None):
+    def find_spb_deterministic(self, criterion, bounds=(-10, 10), tol=0.0001, debt_condition='declines_or_below_60'):
         """
-        Find the number of periods needed to correct an excessive deficit if possible within adjustment period.
-        """
-        # Project baseline and check if deficit is excessive
-        if spb_target is None:
-            self.spb_target = None
-        else:
-            self.spb_target = spb_target
-        self.project(spb_target=spb_target)
-
-        # Define EDP threshold, set to 3% of GDP
-        self.edp_target = -3
-
-        # If deficit excessive, increase spb by 0.5 annually until deficit below 3%
-        if self.ob[self.adjustment_start] < self.edp_target:
-
-            # Set start indices for SPB and SB parts of the EDP: SPB terms until EDP_SPB_TERMS_LAST_YEAR, SB terms after
-            self.edp_spb_index = 0
-            self.edp_sb_index = int(np.clip(EDP_SPB_TERMS_LAST_YEAR + 1 - self.adjustment_start_year, 0, self.adjustment_period))
-
-            # Calculate EDP adjustment steps for spb, sb, and final periods
-            self._calc_edp_spb()
-            self._calc_edp_sb()
-            self._calc_edp_end(spb_target=spb_target)
-
-        # If excessive deficit in year before adjustment start, set edp_end to year before adjustment start
-        elif self.ob[self.adjustment_start - 1] < self.edp_target:
-            self.edp_period = 0
-            self.edp_end = self.adjustment_start - 1
-
-        # If deficit not excessive, set EDP period to 0
-        else:
-            self.edp_period = 0
-            self.edp_end = self.adjustment_start - 2
-
-    def _save_edp_period(self):
-        """
-        Saves EDP period and end period
-        """
-        self.edp_period = np.where(~np.isnan(self.edp_steps))[0][-1] + 1
-        self.edp_end = self.adjustment_start + self.edp_period - 1
-
-    def _calc_edp_spb(self):
-        """
-        Calculate EDP adjustment steps ensuring minimum strucutral primary balance adjustment
-        """
-        # Loop for SPB part of EDP: min. 0.5 spb adjustment while deficit > 3 and in spb adjustmet period
-        while (self.ob[self.adjustment_start + self.edp_spb_index] <= self.edp_target
-                and self.edp_spb_index < self.edp_sb_index):
-
-            # Set EDP step to 0.5
-            self.edp_steps[self.edp_spb_index] = 0.5
-
-            # Project using last periods SPB as target, move to next period
-            self.project(
-                spb_target=self.spb_target,
-                edp_steps=self.edp_steps
-            )
-            self.edp_spb_index += 1
-            self._save_edp_period()
-
-    def _calc_edp_sb(self):
-        """
-        Calculate EDP adjustment steps ensuring minimum strucutral balance adjustment
-        """
-        # Loop for SB balance part of EDP: min. 0.5 ob adjustment while deficit > 3 and before last period
-        while (self.ob[self.adjustment_start + self.edp_sb_index] <= self.edp_target
-                and self.edp_sb_index + 1 <= self.adjustment_period):
-
-            # If sb adjustment is less than 0.5, increase by 0.001
-            while (self.sb[self.adjustment_start + self.edp_sb_index]
-                   - self.sb[self.adjustment_start + self.edp_sb_index - 1] < 0.5):
-
-                # Initiate sb step at current adjustment_step value, increase by 0.001
-                self.edp_steps[self.edp_sb_index] = self.spb_steps[self.edp_sb_index]
-                self.edp_steps[self.edp_sb_index] += 0.001
-
-                # Project using last periods SPB as target, move to next period
-                self.project(
-                    spb_target=self.spb_target,
-                    edp_steps=self.edp_steps
-                )
-
-            # If sb adjustment reaches min. 0.5, move to next period
-            if self.sb[self.adjustment_start + self.edp_sb_index] - self.sb[self.adjustment_start + self.edp_sb_index - 1] >= 0.5:
-
-                # set edp step to spb step in this period to ensure EDP recorded even in cases where step exceeds 0.5
-                self.edp_steps[self.edp_sb_index] = self.spb_steps[self.edp_sb_index]
-                self.edp_sb_index += 1
-                self._save_edp_period()
-
-    def _calc_edp_end(self, spb_target):
-        """
-        Calculate EDP adjustment steps or SPB target ensuring deficit below 3% at adjustment end
-        """
-        # If EDP lasts until penultimate adjustmet period, increase EDP steps to ensure deficit < 3
-        if self.edp_period == self.adjustment_period:
-            while self.ob[self.adjustment_end] < self.edp_target:
-
-                # Aim for linear adjustment path by increasing smallest EDP steps first
-                min_edp_steps = np.min(self.edp_steps[~np.isnan(self.edp_steps)])
-                min_edp_indices = np.where(self.edp_steps == min_edp_steps)[0]
-                self.edp_steps[min_edp_indices] += 0.0001
-                self.project(
-                    spb_target=self.spb_target,
-                    edp_steps=self.edp_steps
-                )
-                self._save_edp_period()
-
-        # If last EDP period has deficit < 3, we do not impose additional adjustment
-        if self.ob[self.adjustment_start - 1 + self.edp_period] >= self.edp_target:
-            self.edp_steps[self.edp_sb_index:] = np.nan
-            self._save_edp_period()
-
-        # If no spb_target was specified, calculate to ensure deficit < 3 until adjustment end
-        if spb_target is None:
-            print('No SPB target specified, calculating to ensure deficit < 3')
-            while np.any(self.ob[self.edp_end + 1:self.adjustment_end + 1] <= self.edp_target):
-                self.spb_target += 0.001
-                self.project(spb_target=self.spb_target, edp_steps=self.edp_steps)
-
-    def find_spb_deterministic(self, criterion, bounds=(-10, 10), tol=0.0001):
-        """
-        Find the primary balance that ensures complience with deterministic criteria
+        Find the smallest SPB target at the end of the adjustment period (linear adjustment) that meets a
+        deterministic criterion. For the debt scenarios, debt_condition sets the criterion over the 10 years after
+        the adjustment period: 'declines_or_below_60' (default), 'declines' or 'below_60'.
         """
         # Check if input parameter correctly specified
         assert criterion in [
@@ -1189,12 +1064,18 @@ class DsaModel:
             'deficit_reduction',
             'debt_safeguard',
         ], 'Unknown deterministic criterion'
+        assert debt_condition in ['declines_or_below_60', 'declines', 'below_60'], 'Unknown debt condition'
+        self.debt_condition = debt_condition
 
         # Set scenario parameter
         if criterion in [None, 'main_adjustment', 'debt_safeguard']:
             self.scenario = 'main_adjustment'
         else:
             self.scenario = criterion
+
+        # The debt safeguard criterion is part of the fiscal rules (FiscalRules, available in StochasticDsaModel)
+        if criterion == 'debt_safeguard' and not hasattr(self, '_debt_safeguard_criterion'):
+            raise NotImplementedError('The debt safeguard is part of FiscalRules: use StochasticDsaModel')
 
         # Precalculate EDP for the debt safeguard if not done yet
         if criterion == 'debt_safeguard' and not hasattr(self, 'edp_period'):
@@ -1213,8 +1094,8 @@ class DsaModel:
         """
         low, high = bounds[0], bounds[1]
 
-        # Check lower bound. The debt safeguard may already hold there (e.g. if the EDP lasts until the end of the
-        # adjustment period), in which case the lower bound is returned
+        # Check lower bound. If the criterion already holds there (e.g. the debt safeguard if the EDP lasts until the
+        # end of the adjustment period), the lower bound is returned
         self._get_spb_steps(criterion=criterion, spb_target=low)
         self.project(
             edp_steps=self.edp_steps,
@@ -1222,10 +1103,8 @@ class DsaModel:
             scenario=self.scenario
         )
         if self._deterministic_condition(criterion=criterion):
-            if criterion == 'debt_safeguard':
-                self.spb_target = low
-                return self.spb_bca[self.adjustment_end]
-            raise ValueError(f'Deterministic criterion {criterion} satisfied at lower bound ({low})')
+            self.spb_target = low
+            return self.spb_bca[self.adjustment_end]
 
         # Check upper bound
         self._get_spb_steps(criterion=criterion, spb_target=high)
@@ -1295,144 +1174,36 @@ class DsaModel:
             or criterion == 'lower_spb'
             or criterion == 'financial_stress'
             or criterion == 'adverse_r_g'):
-            return self._debt_decline_criterion()
+            if self.debt_condition == 'declines':
+                return self._debt_declines()
+            if self.debt_condition == 'below_60':
+                return self._debt_below_60()
+            return self._debt_declines() or self._debt_below_60()
         elif criterion == 'deficit_reduction':
-            return self._deficit_reduction_criterion()
+            return self._deficit_below_3()
         elif criterion == 'debt_safeguard':
             return self._debt_safeguard_criterion()
         else:
             return False
 
-    def _debt_decline_criterion(self):
+    def _debt_declines(self):
         """
-        Checks the debt decline criterion from adjustment end to 10 years after adjustment end.
+        Debt ratio declines in each of the 10 years after the adjustment period (or is zero).
         """
-        return (np.all(np.diff(self.d[self.adjustment_end:self.adjustment_end + 11]) < 0)
-                or self.d[self.adjustment_end + 10] <= 60)
+        e = self.adjustment_end
+        return np.all((np.diff(self.d[e:e + 11]) < 0) | (self.d[e + 1:e + 11] < 1e-3))
 
-    def _deficit_reduction_criterion(self):
+    def _debt_below_60(self):
         """
-        Checks the deficit reduction criterion for <3% deficit for 10 years after adjustment end.
+        Debt ratio is at or below 60% of GDP 10 years after the adjustment period.
+        """
+        return self.d[self.adjustment_end + 10] <= 60
+
+    def _deficit_below_3(self):
+        """
+        Deficit is at or below 3% of GDP in the 10 years after the adjustment period.
         """
         return np.all(self.ob[self.adjustment_end:self.adjustment_end + 11] >= -3)
-
-    def _in_edp_T(self):
-        """
-        Whether the country is in EDP in T, depending on self.edp_status:
-            'input' (default)  EDP status in the input file (EXCESSIVE_DEFICIT_PROCEDURE), as in the Commission prior
-                               guidance; if missing (legacy workbooks), inferred as with 'infer'
-            'infer'            predicted by the model: deficit above 3% of GDP in T, or EDP steps found by find_edp
-            True / False       set by the user
-        """
-        status = getattr(self, 'edp_status', 'input')
-        if isinstance(status, (bool, np.bool_)):
-            return bool(status)
-        flag = self.params.get('EXCESSIVE_DEFICIT_PROCEDURE', np.nan)
-        if status == 'input' and not np.isnan(flag):
-            return flag == 1
-        return getattr(self, 'edp_period', 0) > 0 or self.ob[self.adjustment_start - 1] < -3
-
-    def _edp_applies(self):
-        """
-        Whether the EDP applies: EDP rules active (see find_spb_binding) and country in EDP in T (see _in_edp_T).
-        """
-        return getattr(self, 'edp_active', True) and self._in_edp_T()
-
-    def _debt_safeguard_start(self):
-        """
-        Base year (index) of the debt safeguard, Article 7(2) of Regulation (EU) 2024/1263: the year in which the EDP is
-        projected to be abrogated, or T if no EDP applies, whichever is later. The decline is measured from the debt ratio
-        in this year to the end of the adjustment period.
-
-        As in the Commission prior guidance sheets, a country is in EDP in T if flagged in the input file or if its deficit
-        exceeds 3% of GDP, and the EDP is abrogated in the first year A in which the deficit was below 3% in A-1 (outturn)
-        and remains below 3% in A. Example: deficit above 3% in T, below 3% from T+1: abrogation and base year T+2.
-        """
-        s, e = self.adjustment_start, self.adjustment_end
-        start = self._edp_abrogation_index(last=e) if self._edp_applies() else s - 1
-        if hasattr(self, 'predefined_spb_steps'):
-            start = max(start, s + len(self.predefined_spb_steps) - 1)
-        return start
-
-    def _edp_abrogation_index(self, last):
-        """
-        Index of the year A in which the EDP is projected to be abrogated: the first year from T on (T at the earliest)
-        with a deficit below 3% in A-1 and A. Searched up to index last; returns last + 1 if not abrogated by then.
-        """
-        s = self.adjustment_start
-        ob_before = self.ob[s - 2] if s >= 2 else self._fiscal_balance_before_start()
-        for A in range(s - 1, last + 1):
-            ob_previous = self.ob[A - 1] if A >= 1 else ob_before
-            if self.ob[A] >= -3 and ob_previous >= -3:
-                return A
-        return last + 1
-
-    def _fiscal_balance_before_start(self):
-        """
-        Fiscal balance in the year before the start year from the input data (checked in _load_input_data).
-        """
-        return float(self.df_deterministic_data.loc[self.start_year - 1, 'FISCAL_BALANCE'])
-
-    def _debt_safeguard_criterion(self):
-        """
-        Checks the debt safeguard criterion: average annual decline from the year the EDP is projected to be abrogated
-        (or T) to the end of the adjustment period, 1 pp. if debt in T exceeds 90% and 0.5 pp. otherwise.
-        """
-        debt_safeguard_decline = 1 if self.d[self.adjustment_start - 1] > 90 else 0.5
-        debt_safeguard_start = self._debt_safeguard_start()
-        if debt_safeguard_start >= self.adjustment_end:
-            return True
-
-        return (self.d[debt_safeguard_start] - self.d[self.adjustment_end]
-                >= debt_safeguard_decline * (self.adjustment_end - debt_safeguard_start))
-
-    def find_spb_deficit_resilience(self):
-        """
-        Apply the deficit resilience targets that sets min. annual spb adjustment if structural deficit exceeds 1.5%.
-        """
-        # Initialize deficit_resilience_steps
-        self.deficit_resilience_steps = np.full((self.adjustment_period,), np.nan, dtype=np.float64)
-
-        # Define structural deficit target
-        self.deficit_resilience_target = np.full(self.adjustment_period, -1.5, dtype=float)
-
-        # Define deficit resilience step size
-        if self.adjustment_period <= 4:
-            self.deficit_resilience_step = 0.4
-        else:
-            self.deficit_resilience_step = 0.25
-
-        # Project baseline
-        self.project(
-            spb_target=self.spb_target,
-            edp_steps=self.edp_steps,
-            deficit_resilience_steps=self.deficit_resilience_steps
-        )
-
-        self.deficit_resilience_start = self.adjustment_start
-
-        # Run deficit resilience loop
-        self._deficit_resilience_loop_adjustment()
-
-        return self.spb_bca[self.adjustment_end]
-
-    def _deficit_resilience_loop_adjustment(self):
-        """
-        Loop for adjustment period violations of deficit resilience
-        """
-        for t in range(self.deficit_resilience_start, self.adjustment_end + 1):
-            if ((self.d[t] > 60 or self.ob[t] < -3)
-                and self.sb[t] <= self.deficit_resilience_target[t - self.adjustment_start]
-                and self.spb_steps[t - self.adjustment_start] < self.deficit_resilience_step - 1e-8):  # 1e-8 tol for floating point errors
-                self.deficit_resilience_steps[t - self.adjustment_start] = self.spb_steps[t - self.adjustment_start]
-                while (self.sb[t] <= self.deficit_resilience_target[t - self.adjustment_start]
-                       and self.deficit_resilience_steps[t - self.adjustment_start] < self.deficit_resilience_step - 1e-8):  # 1e-8 tol for floating point errors
-                    self.deficit_resilience_steps[t - self.adjustment_start] += 0.001
-                    self.project(
-                        spb_target=self.spb_target,
-                        edp_steps=self.edp_steps,
-                        deficit_resilience_steps=self.deficit_resilience_steps
-                    )
 
     def project_fr(self, coefs, smooth_period=1):
         """

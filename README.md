@@ -9,11 +9,12 @@ Repository structure:
 - `code/` notebooks:
   - [main.ipynb](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/main.ipynb) produces the results for all EU countries (Excel workbook and country charts in `output/`).
   - [tutorial.ipynb](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/tutorial.ipynb) introduces the model: input data (updating data, data you have to provide yourself), deterministic and stochastic projections, `find_spb_binding` and its rule options, several countries, and additional functions and use cases.
-  - [commission_replication.ipynb](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/commission_replication.ipynb) replicates the Commission's reference trajectories from its prior guidance calculation sheets.
+  - [commission_replication.ipynb](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/commission_replication.ipynb) replicates the Commission's reference trajectories from its prior guidance calculation sheets, compares them with the default rules and discusses the drivers of the differences.
   - [exercises](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/exercises/): additional analyses (EU fiscal rules targets for Hungary from 2026 with Bloomberg market data and an optional own 2026 projection, EU rules vs. German debt brake, green golden rule, potential growth sensitivity).
 - `code/classes/`: the model.
   - [DsaModel](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/classes/DsaModelClass.py): deterministic projections and optimization.
-  - [StochasticDsaModel](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/classes/StochasticDsaModelClass.py): stochastic projections and the integrated optimizer `find_spb_binding`.
+  - [StochasticDsaModel](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/classes/StochasticDsaModelClass.py): stochastic projections; inherits the EU fiscal rules from `FiscalRules`.
+  - [FiscalRules](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/classes/FiscalRules.py): the integrated optimizer `find_spb_binding`, the EDP and the safeguards, with the default and Commission rules.
   - [GroupDsaModel](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/classes/GroupDsaModelClass.py): several countries in parallel, results tables and Excel output.
   - [ResultsTables](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/classes/ResultsTables.py): labelled results tables and the results workbook.
 - `code/data_pipeline/`: builds the Excel input workbook read by the model (see [Input data](#input-data) below).
@@ -115,13 +116,13 @@ build_inputs(mode='commission', prior_guidance='2024')   # or 'latest' (default)
 | `edp` | Minimum steps of 0.5 pp. while the deficit exceeds 3%, front-loaded | Min. 0.5 pp. step after a year with a deficit above 3%, added on top; abrogated after two years with deficit below 3% |
 | `debt_safeguard` | Average decline from the year the EDP is projected to be abrogated (as in the Commission sheets), or T without EDP, by debt in T | By start-of-year debt band, averaged over adjustment years outside the EDP |
 | `deficit_resilience` | Steps raised until the structural deficit is below 1.5% in the same year | Step after a year with a structural deficit above 1.55% |
-| `grid` | Exact SPB target | Annual adjustment rounded up to 0.01 pp. |
+| `grid` | Exact SPB target | Annual adjustment rounded up to 0.01 pp.; floor of 0 pp. (reference trajectory) or -1 pp. per year (technical information) |
 
-In both versions, the EDP benchmark applies to the SPB until 2027 and to the structural balance from 2028 (Regulation (EU) 2024/1264, recital 23).
+In both versions, the EDP benchmark applies to the SPB until 2027 and to the structural balance from 2028 (Regulation (EU) 2024/1264, recital 23). Both versions also use the same implementation of each deterministic DSA criterion (`find_spb_deterministic`): over the 10 years after the adjustment period, the debt ratio declines, the debt ratio is at or below 60% at the end, and the deficit is at or below 3%. The versions differ only in how the criteria are combined. The Commission sheets appear to allow a small tolerance on the deficit (up to about 3.05%); the model applies the 3% threshold of the regulation in both versions, which changes the Commission replication by at most 0.03 pp. per year where the deficit criterion binds.
 
 Results are displayed as pandas tables in notebooks (`print_results=True`) and stored in `model.binding_tables`; `model.key_results()` returns key variables with readable labels. For several countries, `GroupDsaModel.summary()` combines the results in one table and `GroupDsaModel.save_results(folder)` writes one Excel workbook (README, Summary, SPB targets, Adjustment paths, debt by scenario, and one sheet per country with key variables). `save_dfs` still exports all raw model variables.
 
-`data_pipeline.validate.compare_with_commission(input_file)` runs the model for all countries and compares debt paths and required SPB adjustments with the Commission prior guidance sheets (see `output/validation`). `data_pipeline.convert_legacy_csv(csv_file)` converts CSV input files of earlier versions of this repository to the workbook format.
+`data_pipeline.validate.compare_with_commission(input_file)` runs the model for all countries and compares debt paths and required SPB adjustments with the Commission prior guidance sheets (see `output/validation`); `data_pipeline.validate.compare_rules(input_file)` decomposes the differences between the two rule sets. `data_pipeline.convert_legacy_csv(csv_file)` converts CSV input files of earlier versions of this repository to the workbook format.
 
 ## Data sources and licence
 
