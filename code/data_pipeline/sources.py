@@ -11,6 +11,8 @@
 #   Ageing Report    2024 statistical annex    ageing costs, long-term potential growth
 #   DSM              country fiches            stock-flow exceptions, taxes and property income
 #   OGWG             user-supplied file        real and potential GDP to T+5 (optional)
+#   Bloomberg        user-supplied file        forward rates and inflation swaps for the T+10 anchors (optional,
+#                                              data/RawData/market/bloomberg_market_expectations_<yyyy_mm>.csv)
 #
 # Author: Lennard Welslau
 # ========================================================================================= #
@@ -29,6 +31,7 @@ from .maturity import lt_maturing_share
 
 HEADERS = {'User-Agent': 'Mozilla/5.0 (DSA data pipeline)'}
 REFERENCE_DIR = RAW_DIR / 'reference'
+MARKET_DIR = RAW_DIR / 'market'
 
 REFERENCE_FILES = {
     'awg': ('AWG2024_horizontal_tables.xlsx',
@@ -49,6 +52,18 @@ ISO2 = {k: ('GR' if v == 'EL' else v) for k, v in EC_ISO2.items()}
 EDP_STATUS_UPDATES = {
     'AUT': (1, 2025, 'Excessive deficit procedure opened in 2025, after the Commission 2024 prior guidance'),
 }
+
+# National inflation targets of non-euro area countries targeting inflation (DSM 2024, Annex A3, footnote 7); 2% for
+# all other countries. Targets other than 2% also raise the T+10 inflation anchor (footnote 6, see api_build).
+INFLATION_TARGETS = {'CZE': 2.0, 'SWE': 2.0, 'POL': 2.5, 'ROU': 2.5, 'HUN': 3.0}
+
+
+def inflation_target(country):
+    """
+    Inflation target of a country (%): national target of non-euro area inflation targeters, 2% otherwise.
+    """
+    return INFLATION_TARGETS.get(country, 2.0)
+
 
 # Euro adoption year, used to decide whether euro-denominated debt counts as domestic
 EURO_ADOPTION = {
@@ -316,6 +331,25 @@ def read_dsm_fiche_rows(path, countries, patterns):
                     out[code][c] = {y: pd.to_numeric(r[j], errors='coerce') for j, y in header.items()}
     wb.close()
     return {code: pd.DataFrame(v) for code, v in out.items()}
+
+
+def latest_market_file():
+    """
+    Most recent Bloomberg market expectations file in data/RawData/market, None if there is none.
+    """
+    files = sorted(MARKET_DIR.glob('bloomberg_market_expectations_*.csv'))
+    return files[-1] if files else None
+
+
+def read_market_expectations(path, countries):
+    """
+    Bloomberg market expectations (user-supplied CSV, one row per ISO3 country): 3M10Y forward rate (FWD_RATE_3M10Y),
+    10Y10Y forward rate (FWD_RATE_10Y10Y) and euro area 5y5y inflation swap (FWD_INFL_5Y5Y), in %.
+    Returns (DataFrame indexed by ISO3, vintage label from the file name, e.g. '2026-07').
+    """
+    df = pd.read_csv(path).set_index('COUNTRY').reindex(countries)
+    match = re.search(r'(\d{4})_(\d{2})', str(path))
+    return df, f'{match.group(1)}-{match.group(2)}' if match else str(path)
 
 
 def read_ogwg(path, countries):

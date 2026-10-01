@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from .schema import EU27, SERIES, INPUT_DIR
+from .sources import inflation_target
 from .workbook import write_workbook
 
 # Countries for which the legacy model used a non-zero euro debt share
@@ -173,13 +174,9 @@ def _convert_country(iso, raw, series, T):
     else:
         psrc['INFLATION_T10'] = ('legacy', 'Euro area 5y5y inflation swap (Bloomberg)')
 
-    # T+30 anchors: 2% inflation target (+0.5 POL/ROU, +1 HUN), long-term rate = target + 2, short-term = 0.5 x long-term
-    if iso in ['POL', 'ROU']:
-        params['INFLATION_T30'], params['INTEREST_RATE_LT_T30'] = 2.5, 4.5
-    elif iso == 'HUN':
-        params['INFLATION_T30'], params['INTEREST_RATE_LT_T30'] = 3.0, 5.0
-    else:
-        params['INFLATION_T30'], params['INTEREST_RATE_LT_T30'] = 2.0, 4.0
+    # T+30 anchors: inflation target (sources.INFLATION_TARGETS), long-term rate = target + 2, short-term = 0.5 x long-term
+    params['INFLATION_T30'] = inflation_target(iso)
+    params['INTEREST_RATE_LT_T30'] = params['INFLATION_T30'] + 2
     params['INTEREST_RATE_ST_T30'] = params['INTEREST_RATE_LT_T30'] * 0.5
     for p in ['INFLATION_T30', 'INTEREST_RATE_LT_T30', 'INTEREST_RATE_ST_T30']:
         psrc[p] = ('assumption', 'DSM 2023 methodology: national inflation target; LT rate = target + 2; ST rate = 0.5 x LT rate')
