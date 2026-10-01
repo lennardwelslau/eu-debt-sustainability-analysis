@@ -736,28 +736,33 @@ def effects_table(df, adjustment_periods=(4, 7), exclude_groups=('Baseline', 'No
     return out
 
 
-COMBINATIONS = {'draws:accommodative': ('accommodative', 'lowest draw'), 'draws:restrictive': ('restrictive', 'highest draw')}
+COMBINATIONS = {'draws:accommodative': ('accommodative', 0.05), 'draws:restrictive': ('restrictive', 0.95)}
 
 
 def draw_combinations(glob, combinations=COMBINATIONS):
     """
     Accommodative and restrictive combinations of assumptions from the global draws (after add_deviations): for each
-    country, adjustment period and target, the draw with the lowest and the highest target. Returns runs in the format
-    of run_specs (group 'Global draws') with the target, its change, the annual adjustment and the debt path of that
-    draw, and the id of the draw ('draw'; per target).
+    country, adjustment period and target, the 5th and 95th percentile of the target across draws. The draws are a sample,
+    so percentiles do not depend on single extreme combinations as the lowest and highest draw would. Returns runs in the
+    format of run_specs (group 'Global draws') with the percentile of the target and of its change, and the annual
+    adjustment, binding criterion, debt path and id ('<target>_draw') of the draw whose target is closest to the
+    percentile.
     """
     draws = glob[glob['group'] == 'Global']
     rows = []
     for (c, n), g in draws.groupby(['country', 'adjustment_period']):
-        for cid, (label, which) in combinations.items():
+        for cid, (label, q) in combinations.items():
             row = {'id': cid, 'group': 'Global draws', 'check': 'Combined assumptions (global draws)',
-                   'variant': f'{label} ({which})', 'country': c, 'adjustment_period': n, 'T': g['T'].iloc[0]}
+                   'variant': f'{label} ({q * 100:.0f}th percentile)', 'country': c, 'adjustment_period': n,
+                   'T': g['T'].iloc[0]}
             for key, cols in TARGETS.items():
                 d = g.dropna(subset=[cols['target']])
                 if not len(d):
                     continue
-                i = d[cols['target']].idxmin() if which == 'lowest draw' else d[cols['target']].idxmax()
-                for col in ['target', 'delta_target', 'debt_path', 'annual_adjustment', 'criterion']:
+                row[cols['target']] = d[cols['target']].quantile(q)
+                row[cols['delta_target']] = d[cols['delta_target']].quantile(q)
+                i = (d[cols['target']] - row[cols['target']]).abs().idxmin()
+                for col in ['debt_path', 'annual_adjustment', 'criterion']:
                     row[cols[col]] = d.loc[i, cols[col]]
                 row[f'{key}_draw'] = d.loc[i, 'id']
             rows.append(row)
@@ -874,7 +879,7 @@ def plot_ranges(df, adjustment_period, target='dsa', combinations=tuple(COMBINAT
     """
     SPB targets by country (ordered by the baseline target): range across the individual checks of model assumptions
     (grey bar; data revisions excluded), baseline, accommodative and restrictive combinations of the global draws
-    (lowest and highest draw, draw_combinations), Commission target and SPB in T.
+    (5th and 95th percentile, draw_combinations), Commission target and SPB in T.
     """
     cols = TARGETS[target]
     d = df[df['adjustment_period'] == adjustment_period]
@@ -890,8 +895,8 @@ def plot_ranges(df, adjustment_period, target='dsa', combinations=tuple(COMBINAT
     if cols['commission'] in base and base[cols['commission']].notna().any():
         ax.scatter(x, base[cols['commission']], marker='D', s=30, facecolor='none', edgecolor=COMMISSION, lw=1.4,
                    zorder=3, label='Commission')
-    for bid, color, label, marker in [(combinations[0], ACCOMMODATIVE, 'Accommodative (lowest draw)', 'v'),
-                                      (combinations[1], RESTRICTIVE, 'Restrictive (highest draw)', '^')]:
+    for bid, color, label, marker in [(combinations[0], ACCOMMODATIVE, 'Accommodative (5th pct. of draws)', 'v'),
+                                      (combinations[1], RESTRICTIVE, 'Restrictive (95th pct. of draws)', '^')]:
         b = d[d['id'] == bid].set_index('country').reindex(countries)
         if b[cols['target']].notna().any():
             ax.scatter(x, b[cols['target']], marker=marker, s=40, color=color, zorder=4, label=label)
@@ -910,15 +915,16 @@ def plot_debt_paths(df, adjustment_period=4, target='dsa', countries=None, ncols
                     exclude_groups=('Baseline', 'Noise', 'Global', 'Global draws'), exclude_ids=('data:latest',)):
     """
     Debt by country (one panel each) under a linear adjustment to the target of each run: baseline and the accommodative
-    and restrictive combinations of the global draws (lowest and highest draw of the target), with the range across the
+    and restrictive combinations of the global draws (draws closest to the 5th and 95th percentile of the target), with
+    the range across the
     individual checks of model assumptions (grey; data revisions excluded).
     """
     col = TARGETS[target]['debt_path']
     d = df[(df['adjustment_period'] == adjustment_period) & df[col].notna()]
     countries = countries or list(dict.fromkeys(d['country']))
     lines = [('baseline', 'Baseline', BASELINE),
-             ('draws:accommodative', 'Accommodative (lowest draw)', ACCOMMODATIVE),
-             ('draws:restrictive', 'Restrictive (highest draw)', RESTRICTIVE)]
+             ('draws:accommodative', 'Accommodative (5th pct. of draws)', ACCOMMODATIVE),
+             ('draws:restrictive', 'Restrictive (95th pct. of draws)', RESTRICTIVE)]
     nrows = int(np.ceil(len(countries) / ncols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(3.2 * ncols, 2.3 * nrows + 0.8), squeeze=False)
     for ax, c in zip(axes.ravel(), countries):
