@@ -13,7 +13,10 @@
 #   T+10 onwards  Ageing Report potential growth; ageing costs from T
 #   Markets       ECB benchmark rates in T and T+1; T+10/T+30 anchors from the Commission prior
 #                 guidance sheet (Bloomberg forwards and inflation swaps)
-#   Debt          ECB debt structure (fallback: Commission prior guidance sheet); ESM repayments
+#   Debt          ECB debt structure; Eurostat (gov_10dd_rmd, gov_10dd_ggd) where ECB data are missing or
+#                 implausible, then the Commission prior guidance sheet, then the EU median; maturing shares
+#                 exclude ESM/EFSF loans (own schedule in the model); average residual maturity and repayment
+#                 profile of long-term debt (BOND_REPAYMENT) from Eurostat; ESM repayments
 #   Stock-flow    AMECO to L; country-specific paths after L from the latest DSM fiches
 #
 # As in the Commission prior guidance, the reference year T is the year of the forecast vintage, i.e.
@@ -30,6 +33,7 @@ import requests
 
 from .schema import SERIES
 from . import sources as S
+from . import maturity as M
 from .commission import commission_parameters
 
 END_YEAR = 2070
@@ -75,8 +79,15 @@ def build_countries(countries, sheets, reference_year=None, ogwg_file=None, verb
     if verbose:
         print(f'Reference year T = {T}, last forecast year {L}. Fetching ECB rates and debt structure, ESM repayments ...')
     rates = S.fetch_benchmark_rates(countries, [T, T + 1])
-    debt, debt_years = S.fetch_debt_structure(countries)
-    esm = S.fetch_esm_repayments(countries, T)
+    esm_history = S.fetch_esm_repayments(countries, 2010)  # incl. disbursements, for past ESM/EFSF loan stocks
+    esm = esm_history.loc[T:]
+    debt, debt_years = S.fetch_debt_structure(countries, esm=esm_history)
+    if verbose:
+        print('Fetching Eurostat debt maturity data ...')
+    maturity = M.fetch_maturity_data(countries)
+    eurostat = M.eurostat_debt_structure(maturity, countries, esm=esm_history)[0]
+    debt_params, debt_sources, debt_median = _debt_structure(debt, eurostat, countries)
+    profiles, profile_info = M.repayment_profiles(maturity, countries, T, esm, end_year=END_YEAR)
 
     if verbose:
         print('Reading Ageing Report and DSM reference files ...')
@@ -93,11 +104,13 @@ def build_countries(countries, sheets, reference_year=None, ogwg_file=None, verb
     for c in countries:
         data[c] = _build_country(c, T, L, ameco[c], ea_deflator, usd_per_eur, rates, debt.loc[c], esm[c],
                                  awg_ageing[c], awg_growth[c], dsm['SF'].get(c), dsm['TPI'].get(c),
-                                 ogwg, sheets[c], ameco_vintage)
+                                 ogwg, sheets[c], ameco_vintage, debt_params.loc[c], debt_sources[c], debt_median,
+                                 profiles.get(c), profile_info.get(c))
         _check(c, T, L, data[c])
 
     description = (f'Up-to-date public data. AMECO via DBnomics (indexed {ameco_vintage}), ECB Data Portal '
-                   f'(debt structure to {max(debt_years.values())}), ESM repayment database, 2024 Ageing Report, '
+                   f'(debt structure to {max(debt_years.values())}), Eurostat debt maturity (gov_10dd_rmd, gov_10dd_ggd), '
+                   f'ESM repayment database, 2024 Ageing Report, '
                    f'DSM 2025 country fiches, '
                    f"{'OGWG file ' + str(ogwg_file) if ogwg_file else 'no OGWG file (output gap closes by T+5)'}. "
                    f'Market anchors (T+10, T+30), EDP status and semi-elasticities from the Commission prior '
@@ -105,8 +118,48 @@ def build_countries(countries, sheets, reference_year=None, ogwg_file=None, verb
     return data, description
 
 
+# Debt structure parameters. Fallback order: ECB, Eurostat, Commission sheet; the maturing shares fall back to the EU
+# median where the Commission sheet value is implausible too (e.g. 0.001 for Luxembourg)
+DEBT_SHARES = ['DEBT_ST_SHARE', 'DEBT_LT_MATURING_SHARE', 'DEBT_LT_MATURING_AVG_SHARE']
+MATURING = ['DEBT_LT_MATURING_SHARE', 'DEBT_LT_MATURING_AVG_SHARE']
+
+
+def _plausible(v):
+    return pd.notna(v) and 0.005 < v < 1
+
+
+def _debt_structure(ecb, eurostat, countries):
+    """
+    Debt structure parameters from the ECB, with Eurostat where the ECB data are missing or implausible. The two
+    maturing shares are taken from the same source (the ECB residual maturity series is implausible for some
+    countries in all years); a share alone is taken from the ECB if neither pair is usable.
+    Returns (DataFrame ISO3 x parameter, NaN where neither source is usable; dict ISO3 -> {parameter: (provenance,
+    note)}; Series of EU medians of the parameters).
+    """
+    out = pd.DataFrame(np.nan, index=countries, columns=DEBT_SHARES + ['DEBT_AVG_RESIDUAL_MATURITY'])
+    src = {c: {} for c in countries}
+    for c in countries:
+        e, u = ecb.loc[c], eurostat.loc[c]
+        for group in [['DEBT_ST_SHARE'], MATURING]:
+            if all(_plausible(e.get(p)) for p in group):
+                for p in group:
+                    out.loc[c, p], src[c][p] = e[p], ('api', 'ECB GFS debt structure')
+            elif all(_plausible(u.get(p)) for p in group):
+                for p in group:
+                    out.loc[c, p], src[c][p] = u[p], ('api', 'Eurostat gov_10dd_rmd/ggd (ECB data missing or implausible)')
+            else:
+                for p in group:
+                    if _plausible(e.get(p)):
+                        out.loc[c, p], src[c][p] = e[p], ('api', 'ECB GFS debt structure')
+        if pd.notna(u.get('DEBT_AVG_RESIDUAL_MATURITY')):
+            out.loc[c, 'DEBT_AVG_RESIDUAL_MATURITY'] = u['DEBT_AVG_RESIDUAL_MATURITY']
+            src[c]['DEBT_AVG_RESIDUAL_MATURITY'] = ('api', 'Eurostat gov_10dd_rmd, average residual maturity of debt')
+    return out, src, out.median()
+
+
 def _build_country(c, T, L, am, ea_deflator, usd_per_eur, rates, debt, esm, awg_ageing, awg_growth,
-                   dsm_sf, dsm_tpi, ogwg, sheet, ameco_vintage):
+                   dsm_sf, dsm_tpi, ogwg, sheet, ameco_vintage, debt_params, debt_sources, debt_median,
+                   profile=None, profile_info=None):
     years = range(T - 3, END_YEAR + 1)
     out = pd.DataFrame(index=pd.Index(years, name='YEAR'), columns=list(SERIES), dtype=float)
     prov = pd.DataFrame(None, index=out.index, columns=out.columns, dtype=object)
@@ -202,6 +255,10 @@ def _build_country(c, T, L, am, ea_deflator, usd_per_eur, rates, debt, esm, awg_
     # ESM repayments
     put('ESM_REPAYMENT', esm.loc[T:END_YEAR], 'api', 'ESM repayment database (RepaymentData.csv), bn EUR')
 
+    # Repayments of long-term debt outstanding at the end of T-1 (used if bond_data=True)
+    if profile is not None:
+        put('BOND_REPAYMENT', profile, 'derived' if profile_info['estimated'] else 'api', profile_info['note'])
+
     # Parameters: market anchors, elasticities from Commission sheet; debt structure from ECB with fallback
     params, psrc = commission_parameters(sheet)
     params['LAST_FORECAST_YEAR'] = L
@@ -219,12 +276,19 @@ def _build_country(c, T, L, am, ea_deflator, usd_per_eur, rates, debt, esm, awg_
     for p in ['INTEREST_RATE_ST_T10', 'INTEREST_RATE_LT_T10', 'INFLATION_T10']:
         psrc[p] = (psrc[p][0], psrc[p][1] + note_T10)
     euro_member = S.EURO_ADOPTION.get(c, 9999) <= T + 1
-    for p in ['DEBT_ST_SHARE', 'DEBT_LT_MATURING_SHARE', 'DEBT_LT_MATURING_AVG_SHARE']:
-        v = debt.get(p, np.nan)
-        if pd.notna(v) and 0.005 < v < 1:
-            params[p], psrc[p] = v, ('api', 'ECB GFS debt structure')
+    for p in DEBT_SHARES:
+        if pd.notna(debt_params[p]):
+            params[p], psrc[p] = debt_params[p], debt_sources[p]
+        elif p == 'DEBT_ST_SHARE' or _plausible(params.get(p)):
+            psrc[p] = ('commission', psrc[p][1] + ' (ECB and Eurostat data missing or implausible)')
         else:
-            psrc[p] = ('commission', psrc[p][1] + ' (ECB data missing or implausible)')
+            params[p] = debt_median[p]
+            psrc[p] = ('assumption', 'EU median (ECB, Eurostat and Commission sheet data missing or implausible)')
+    if pd.notna(debt_params['DEBT_AVG_RESIDUAL_MATURITY']):
+        params['DEBT_AVG_RESIDUAL_MATURITY'] = debt_params['DEBT_AVG_RESIDUAL_MATURITY']
+        psrc['DEBT_AVG_RESIDUAL_MATURITY'] = debt_sources['DEBT_AVG_RESIDUAL_MATURITY']
+    else:
+        psrc['DEBT_AVG_RESIDUAL_MATURITY'] = ('derived', 'Not available from Eurostat; the model uses 1 / DEBT_LT_MATURING_AVG_SHARE')
     dom, eur = debt.get('DEBT_DOMESTIC_SHARE', np.nan), debt.get('DEBT_EUR_SHARE', np.nan)
     eur = 0.0 if pd.isna(eur) else eur
     if euro_member:

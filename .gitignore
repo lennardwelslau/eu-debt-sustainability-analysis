@@ -10,3 +10,6 @@ data/InputData/dsa_inputs_user*.xlsx
 
 # Reference files downloaded by the data pipeline (Ageing Report, Debt Sustainability Monitor)
 data/RawData/reference/
+
+# Run caches of the sensitivity exercise (results are saved in sensitivity_results.xlsx)
+output/sensitivity/*.pkl

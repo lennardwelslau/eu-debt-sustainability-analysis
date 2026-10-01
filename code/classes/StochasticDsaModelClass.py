@@ -34,6 +34,25 @@ from classes.DsaModelClass import DEFAULT_INPUT_FILE
 from classes.FiscalRules import FiscalRules
 from data_pipeline import read_shocks
 
+# Fanchart style, shared by StochasticDsaModel.fanchart and the country charts (functions/country_charts.py)
+FAN_OUTER, FAN_INNER = plt.get_cmap('Blues')(0.35), plt.get_cmap('Blues')(0.7)
+
+
+def plot_fan(ax, df, deterministic_label='Deterministic'):
+    """
+    Plot a fanchart on ax: 10th-30th and 70th-90th percentiles (light blue), 30th-70th percentiles (dark blue), median
+    and the deterministic path. df is indexed by year with columns 'baseline' and 'p10', 'p30', 'p50', 'p70', 'p90'
+    (NaN outside the stochastic period; percentile columns may be missing for deterministic results).
+    """
+    sim = df.dropna(subset=['p50']) if 'p50' in df else df.iloc[0:0]
+    if len(sim):
+        ax.fill_between(sim.index, sim['p10'], sim['p30'], color=FAN_OUTER, lw=0, label='10th-30th / 70th-90th pct')
+        ax.fill_between(sim.index, sim['p70'], sim['p90'], color=FAN_OUTER, lw=0)
+        ax.fill_between(sim.index, sim['p30'], sim['p70'], color=FAN_INNER, lw=0, label='30th-70th pct')
+        ax.plot(sim.index, sim['p50'], color='black', lw=2, label='Median')
+    ax.plot(df.index, df['baseline'], color='C3', ls='--', lw=2, label=deterministic_label)
+
+
 
 
 class StochasticDsaModel(FiscalRules, DsaModel):
@@ -416,7 +435,7 @@ class StochasticDsaModel(FiscalRules, DsaModel):
 #                                AUXILIARY METHODS                                          #
 # ========================================================================================= #
 
-    def fanchart(self, var='d', plot=True, save_as=None, xlim=None, ylim=None, pct_line=False, figsize=(10, 6)):
+    def fanchart(self, var='d', plot=True, save_as=None, xlim=None, ylim=None, figsize=(10, 6)):
         """
         Create a fanchart for the debt-to-GDP ratio or other variables. Percentiles are stored in df_fanchart.
         save_as: optional file path for the plot (e.g. '../output/fanchart.png').
@@ -440,25 +459,22 @@ class StochasticDsaModel(FiscalRules, DsaModel):
         # Create array of years and baseline debt-to-GDP ratio
         years = np.arange(self.start_year, self.end_year+1)
 
-        # Plot the results using fill between if plot is True
+        # Save fanchart data in a dataframe
+        self.df_fanchart = pd.DataFrame({'year': years, 'baseline': bl_var})
+        for pct in self.pcts_dict:
+            df_pct = pd.DataFrame({'year': years[self.stochastic_start-1:self.stochastic_end+1], f'p{pct}':
+            self.pcts_dict[pct]})
+            self.df_fanchart = self.df_fanchart.merge(df_pct, on='year', how='left')
+
+        # Plot the fanchart (plot_fan) with the legend below the plot
         if plot:
             fig, ax = plt.subplots(figsize=figsize)
-            ax.plot(years, bl_var, ls='--', lw=3, color='red', label='Baseline', zorder=3)
-            ax.plot(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[50], alpha=1, ls='-', lw=3, color='black', label='Median', zorder=2)
-            if pct_line:
-                if not hasattr(self, 'prob_target'):
-                    self.prob_target = 0.7
-                pct = int((self.prob_target) * 100)
-                ax.plot(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[pct], color='darkgreen', linestyle=(0,(1,1)), lw=3.5, label=f'{pct} pct', zorder=1)
-            ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[40], self.pcts_dict[60], color='dodgerblue', edgecolor='none', lw=1, alpha=0.9, label='40-60 pct', zorder=0)
-            ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[30], self.pcts_dict[70], color='dodgerblue', edgecolor='none', lw=1, alpha=0.5, label='30-70 pct', zorder=0)
-            ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[20], self.pcts_dict[80], color='dodgerblue', edgecolor='none', lw=1, alpha=0.3, label='20-80 pct', zorder=0)
-            ax.fill_between(years[self.stochastic_start-1:self.stochastic_end+1], self.pcts_dict[10], self.pcts_dict[90], color='dodgerblue', edgecolor='none', lw=1, alpha=0.15, label='10-90 pct', zorder=0)
+            df = self.df_fanchart.set_index('year').loc[xlim[0]:xlim[1]]  # visible years only, for the y-axis range
+            plot_fan(ax, df)
 
             # Plot layout
-            ax.legend(loc='best')
+            ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.08), ncol=2, frameon=False)
             ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
-            ax.xaxis.grid(False)
             ylabel = 'Debt (percent of GDP)' if var == 'd' else var
             ax.set_ylabel(ylabel)
             ax.set_title(f'{self.stochastic_period}-year fanchart for {self.country} (adjustment {self.adjustment_start_year}-{self.adjustment_end_year})')
@@ -469,13 +485,6 @@ class StochasticDsaModel(FiscalRules, DsaModel):
             if save_as:
                 plt.savefig(save_as, dpi=300, bbox_inches='tight')
             plt.show()
-
-        # Save fanchart data in a dataframe
-        self.df_fanchart = pd.DataFrame({'year': years, 'baseline': bl_var})
-        for pct in self.pcts_dict:
-            df_pct = pd.DataFrame({'year': years[self.stochastic_start-1:self.stochastic_end+1], f'p{pct}':
-            self.pcts_dict[pct]})
-            self.df_fanchart = self.df_fanchart.merge(df_pct, on='year', how='left')
 
     def plot_shocks(self, hist=False, percentiles=False, sim=False, figsize=(15, 10)):
         """

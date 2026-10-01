@@ -38,6 +38,11 @@ DEFAULT_INPUT_FILE = None
 
 class DsaModel:
 
+    # Range of BOND_REPAYMENT as a share of long-term debt excluding ESM/EFSF loans in the start year (bond_data=True).
+    # Eurostat profiles of debt at the end of T-1 cover about 75-93% of the debt at the end of T (debt issued in T is
+    # missing); a profile of debt outstanding in T cannot exceed it.
+    BOND_COVERAGE_BOUNDS = (0.75, 1.0)
+
     # ========================================================================================= #
     #                                   INITIALIZE MODEL                                        #
     # ========================================================================================= #
@@ -350,7 +355,10 @@ class DsaModel:
         self.D_share_lt = 1 - self.D_share_st
         self.D_share_lt_maturing_T = self.params['DEBT_LT_MATURING_SHARE']
         self.D_share_lt_mat_avg = self.params['DEBT_LT_MATURING_AVG_SHARE']
-        self.avg_res_mat = np.min([round((1 / self.D_share_lt_mat_avg)), 30])
+
+        # Average residual maturity (stochastic interest rate shocks) from the input file, else one over the average share
+        avg_res_mat = self.params.get('DEBT_AVG_RESIDUAL_MATURITY', np.nan)
+        self.avg_res_mat = np.min([avg_res_mat if pd.notna(avg_res_mat) else round(1 / self.D_share_lt_mat_avg), 30])
 
         # Set share of domestic, euro and usd debt (euro share is zero for euro area members, set in input file)
         self.D_share_domestic = np.round(self.params['DEBT_DOMESTIC_SHARE'], 4)
@@ -394,13 +402,27 @@ class DsaModel:
 
     def _clean_bond_repayment(self):
         """
-        Clean long-term bond repayment data.
+        Clean repayments of the long-term debt outstanding at the end of the start year (excluding ESM/EFSF loans).
+        The repayment profile is scaled to that debt, so that all of it is repaid: profiles of debt outstanding at an
+        earlier date (e.g. end of T-1) do not cover debt issued since, which is assumed to mature like the existing debt.
+        Raises an error if the profile adds up to less or more than BOND_COVERAGE_BOUNDS of the debt.
         """
-        # Import bond repayment data
-        if self.df_deterministic_data.loc[self.start_year + 1:, 'BOND_REPAYMENT'].isna().all():
+        repayment = self.df_deterministic_data.loc[self.start_year + 1:, 'BOND_REPAYMENT']
+        if repayment.isna().all():
             raise ValueError(f'bond_data=True requires BOND_REPAYMENT data for {self.country} in {self.input_file}')
-        for t, y in enumerate(range(self.start_year, self.end_year + 1)):
-            self.repayment_lt_bond[t] = self.df_deterministic_data.loc[y, 'BOND_REPAYMENT']
+        repayment = repayment.fillna(0)
+
+        # Coverage of long-term debt excluding ESM/EFSF loans in the start year (repayments after end_year included)
+        stock = self.D_lt[0] - self.D_lt_esm[0]
+        self.bond_coverage = repayment.sum() / stock
+        low, high = self.BOND_COVERAGE_BOUNDS
+        if not low - 1e-6 <= self.bond_coverage <= high + 1e-6:
+            raise ValueError(
+                f'BOND_REPAYMENT for {self.country} adds up to {self.bond_coverage:.0%} of long-term debt excluding '
+                f'ESM/EFSF loans in {self.start_year} ({repayment.sum():.1f} of {stock:.1f} bn), expected {low:.0%} to '
+                f'{high:.0%}. Check the units and coverage of BOND_REPAYMENT, DEBT_TOTAL, DEBT_ST_SHARE and ESM_REPAYMENT.')
+        for t, y in enumerate(range(self.start_year + 1, self.end_year + 1), start=1):
+            self.repayment_lt_bond[t] = repayment[y] / self.bond_coverage
 
     def _clean_pb(self):
         """

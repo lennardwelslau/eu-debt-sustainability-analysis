@@ -45,6 +45,7 @@ PARAMETERS = {
     'DEBT_ST_SHARE': ('Share of short-term debt in total debt', 'share'),
     'DEBT_LT_MATURING_SHARE': ('Share of long-term debt maturing in T+1 (starting value)', 'share'),
     'DEBT_LT_MATURING_AVG_SHARE': ('Share of long-term debt maturing each year (T+10 convergence value)', 'share'),
+    'DEBT_AVG_RESIDUAL_MATURITY': ('Average residual maturity of debt (stochastic interest rate shocks; optional, default 1 / DEBT_LT_MATURING_AVG_SHARE)', 'years'),
     'DEBT_DOMESTIC_SHARE': ('Share of debt in domestic currency', 'share'),
     'DEBT_EUR_SHARE': ('Share of debt in euro (0 for euro area members, counted as domestic)', 'share'),
     'INTEREST_RATE_ST_T10': ('Short-term market interest rate, T+10 convergence value', '%'),
@@ -81,7 +82,7 @@ SERIES = {
     'STOCK_FLOW_RATIO': ('Stock-flow adjustment, exogenous path (overrides STOCK_FLOW where given)', '% of GDP', 'Debt'),
     'DEBT_LT_MATURING_SHARE_PATH': ('Share of long-term debt maturing each year (optional path, overrides interpolation)', 'share', 'Debt'),
     'ESM_REPAYMENT': ('ESM/EFSF loan repayments', 'bn national currency', 'Debt'),
-    'BOND_REPAYMENT': ('Repayments of outstanding long-term bonds (used if bond_data=True)', 'bn national currency', 'Debt'),
+    'BOND_REPAYMENT': ('Repayments of long-term debt outstanding at the start (excl. ESM/EFSF loans; used if bond_data=True, scaled to long-term debt in T)', 'bn national currency', 'Debt'),
     # Markets
     'INTEREST_RATE_ST': ('Short-term market interest rate (3M)', '%', 'Markets'),
     'INTEREST_RATE_LT': ('Long-term market interest rate (10Y)', '%', 'Markets'),

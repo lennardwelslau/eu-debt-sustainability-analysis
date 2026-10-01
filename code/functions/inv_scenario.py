@@ -18,7 +18,7 @@ from matplotlib.ticker import FormatStrFormatter
 import seaborn as sns
 from data_pipeline import REPO_ROOT
 from classes import StochasticDsaModel as DSA
-from functions.annex_charts import get_country_name
+from functions.country_charts import get_country_name
 
 base_dir = REPO_ROOT.as_posix() + '/'  # repository root, independent of the working directory
 

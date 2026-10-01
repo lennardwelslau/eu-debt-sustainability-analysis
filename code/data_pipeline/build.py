@@ -70,9 +70,10 @@ def build_inputs(mode='api', countries=EU27, vintage=None, prior_guidance='lates
         'description': description,
         'created': datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
     }
-    if shocks is True:
+    if shocks:
         from .shocks import build_shocks, SHOCK_SOURCES
-        shocks = build_shocks(countries)
+        if shocks is True:
+            shocks = build_shocks(countries)
         meta['shock_sources'] = SHOCK_SOURCES
     out_file = out_file or INPUT_DIR / f'dsa_inputs_{vintage}.xlsx'
     write_workbook(out_file, data, meta, overrides=overrides, shocks=shocks or None)

@@ -25,6 +25,7 @@ import openpyxl
 
 from .schema import RAW_DIR
 from .commission import EC_ISO2
+from .maturity import lt_maturing_share
 
 HEADERS = {'User-Agent': 'Mozilla/5.0 (DSA data pipeline)'}
 REFERENCE_DIR = RAW_DIR / 'reference'
@@ -198,11 +199,12 @@ def fetch_benchmark_rates(countries, years):
     return out
 
 
-def fetch_debt_structure(countries, start=2015):
+def fetch_debt_structure(countries, start=2015, esm=None):
     """
     Debt structure parameters from ECB GFS (annual):
         DEBT_ST_SHARE:              3-year average share of short-term debt (original maturity < 1 year)
-        DEBT_LT_MATURING_SHARE:     latest share of long-term debt with residual maturity < 1 year
+        DEBT_LT_MATURING_SHARE:     latest share of long-term debt with residual maturity < 1 year, excluding ESM/EFSF
+                                    loans (esm: signed ESM schedule by year, see maturity.esm_outstanding)
         DEBT_LT_MATURING_AVG_SHARE: 6-year average of the above
         DEBT_DOMESTIC_SHARE, DEBT_EUR_SHARE: latest currency shares
     Returns DataFrame (ISO3 x parameter) and the last year used.
@@ -224,7 +226,7 @@ def fetch_debt_structure(countries, start=2015):
         total, st, lt, mat = get('TOTAL'), get('ST'), get('LT'), get('MATURING')
         last = total.last_valid_index()
         st_share = (st / total).dropna()
-        lt_mat = ((mat - st) / lt).dropna()
+        lt_mat = lt_maturing_share(lt, mat - st, esm, c, scale=1000)  # ECB data in millions
         dom, eur = (get('DOMESTIC') / total).dropna(), (get('EUR') / total).dropna()
         rows[c] = {
             'DEBT_ST_SHARE': st_share.loc[last - 2:last].mean() if len(st_share) else np.nan,
@@ -243,7 +245,7 @@ def fetch_debt_structure(countries, start=2015):
 
 def fetch_esm_repayments(countries, start_year):
     """
-    ESM/EFSF repayment schedules (latest events) in bn EUR by year from start_year.
+    ESM/EFSF repayment schedules (latest events) in bn EUR by year from start_year; disbursements are negative.
     Returns DataFrame (year x ISO3), zero where no repayments.
     """
     df = pd.read_csv(io.StringIO(_get(ESM_URL).text))

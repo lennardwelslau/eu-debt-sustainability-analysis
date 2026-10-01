@@ -18,7 +18,7 @@ Repository structure:
   - [GroupDsaModel](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/classes/GroupDsaModelClass.py): several countries in parallel, results tables and Excel output.
   - [ResultsTables](https://github.com/lennardwelslau/eu-debt-sustainability-analysis/blob/main/code/classes/ResultsTables.py): labelled results tables and the results workbook.
 - `code/data_pipeline/`: builds the Excel input workbook read by the model (see [Input data](#input-data) below).
-- `code/functions/`: country charts (`plot_annex_charts`), consecutive adjustment periods (`run_consecutive_dsa`) and the green golden rule scenario.
+- `code/functions/`: country charts (`plot_country_charts`), consecutive adjustment periods (`run_consecutive_dsa`) and the green golden rule scenario.
 - `data/InputData/`: input workbooks (`dsa_inputs_<vintage>.xlsx`); `data/RawData/`: downloaded source files (Commission prior guidance sheets, Ageing Report, Debt Sustainability Monitor).
 - `output/`: results (`example_folder` from `main.ipynb`, `validation` from the Commission comparison).
 
@@ -94,7 +94,7 @@ Workbooks are built with the `data_pipeline` package. Downloaded source files ar
 ```python
 from data_pipeline.build import build_inputs
 
-# Up-to-date public data: AMECO (via DBnomics), ECB Data Portal, ESM repayments, Ageing Report 2024, DSM 2025 fiches,
+# Up-to-date public data: AMECO (via DBnomics), ECB Data Portal, Eurostat debt maturity, ESM repayments, Ageing Report 2024, DSM 2025 fiches,
 # historical shocks from Eurostat, OECD and ECB. Market anchors (Bloomberg forward rates, inflation swaps), EDP status
 # and semi-elasticities default to the Commission prior guidance sheets. Output Gaps Working Group data are optional.
 build_inputs(mode='api', ogwg_file=None)
@@ -130,7 +130,7 @@ The code is published under the MIT licence (see `LICENSE`). The licence does no
 
 - European Commission (DG ECFIN): AMECO database and forecasts, prior guidance calculation sheets, Debt Sustainability Monitor 2025 country fiches, 2024 Ageing Report. Reuse is authorised with acknowledgement of the source ([Commission reuse policy](https://commission.europa.eu/legal-notice_en#copyright-notice)). Market expectations in the prior guidance sheets (forward rates, inflation swaps) are Bloomberg data as published by the Commission.
 - Eurostat, ECB Data Portal, OECD (historical series for the stochastic projections, debt structure, benchmark rates) and the ESM repayment database, used with acknowledgement of the source.
-- Bond-level repayment data (`BOND_REPAYMENT`, legacy workbook only) from Refinitiv/Eikon; bond-level data from Bloomberg or Refinitiv can be supplied by the user.
+- Repayment profiles of long-term debt (`BOND_REPAYMENT`) from Eurostat (debt by residual maturity, `gov_10dd_rmd`); the legacy workbook contains bond-level data from Refinitiv/Eikon. Bond-level data from Bloomberg or Refinitiv can be supplied by the user.
 
 The `Sources` sheet and the country sheets of each input workbook document the source of every value.
 
@@ -167,12 +167,12 @@ These adverse scenarios are assumed for ten years after the end of the adjustmen
 
 The reference year $`T`$ is the year of the Commission forecast vintage, as in the Commission prior guidance. Forecast data (AMECO) are available up to $`T+1`$ (spring forecast) or $`T+2`$ (autumn forecast); later years are projected.
 
-- Shares of debt by currency, of short-term debt and of maturing debt are based on ECB data.
+- Shares of debt by currency, of short-term debt and of maturing debt are based on ECB data. Where the ECB data are missing or implausible, the shares of short-term and maturing debt come from Eurostat (debt by original and residual maturity, `gov_10dd_ggd` and `gov_10dd_rmd`), then from the Commission prior guidance sheets, and the maturing shares from the EU median as a last resort (Luxembourg). The average residual maturity of debt and the optional repayment profile of long-term debt (`bond_data=True`) come from Eurostat.
 - Exchange rates are taken from the Commission forecast and assumed to remain constant afterwards.
 - Stock-flow adjustments are taken from the Commission forecast. After the forecast, they are zero except for country-specific paths from the Debt Sustainability Monitor 2025 country fiches (e.g. pension fund balances in Finland and Luxembourg).
 - Nominal GDP growth, the primary balance, and the implicit interest rate on government debt are endogenous model variables. They build on the Commission forecast, medium-term real and potential growth projections of the Output Gaps Working Group (if supplied; otherwise the output gap closes by $`T+5`$), long-term growth and ageing-cost projections from the 2024 Ageing Report, market expectations for inflation and interest rates (Bloomberg, as used in the Commission prior guidance), a fiscal multiplier of 0.75 based on Carnot and de Castro (2015), and budget balance semi-elasticities based on Mourre et al. (2019).
 
-The projection of the implicit interest rate on government debt further relies on ECB data on government debt stocks, shares of short- and long-term debt issuance, and average annual debt redemption, as well as market expectations for interest rates from Bloomberg. All data sources are documented in the `Sources` sheet and the country sheets of the input workbook (see [Input data](#input-data)).
+The projection of the implicit interest rate on government debt further relies on ECB and Eurostat data on government debt stocks, shares of short- and long-term debt issuance, and average annual debt redemption, as well as market expectations for interest rates from Bloomberg. All data sources are documented in the `Sources` sheet and the country sheets of the input workbook (see [Input data](#input-data)).
 
 #### Projecting Nominal Growth
 
@@ -206,7 +206,7 @@ Here, $`\alpha_{t-1}`$ is the share of short-term debt in the total debt stock i
 
 where $`\beta_{t-1}`$ is the share of new long-term debt issuance in total long-term debt stock in $`t-1`$. Long-term market rates are projected by linearly interpolating from 10-year government bond benchmark rates (ECB) to 10Y10Y forward rates in $`T+10`$ (Bloomberg, as used in the Commission prior guidance). Between $`T+10`$ and $`T+30`$, long-term market rates converge linearly to 2 percent plus national inflation targets, which yields 4.5 percent for Poland and Romania, 5 percent for Hungary, and 4 percent for all other countries. Short-term market rates are calculated using 3 months benchmark rates, 3M10Y forward rates, and 0.5 times the country-specific values for the long-term rate in $`T+30`$.
 
-To project the implicit interest rate forward, we calculate the new issuance and total stock of short-term and long-term debt in each period $`t`$. Gross financing needs, i.e. the size of new issuance, are the sum of all interest and amortization payments, and the primary balance. Here, interest on short-term debt is the product of short-term market rates and the stock of short-term debt in $`t-1`$. Interest on long-term debt is the product of the implied interest rate on long-term debt $`iir_t^{LT}`$ and the long-term debt stock in $`t-1`$. Short-term debt is redeemed entirely each period. The share of long-term debt maturing each year starts at the share of long-term debt with maturity below one year in total long-term debt in the latest ECB data and converges by $`T+10`$ to its historical average (ECB). Loans from the ESM/EFSF follow their repayment schedule. Given gross financing needs, the share of newly issued short- and long-term debt is calculated such that the share of short-term debt in total debt is held constant. The resulting debt issuances and stocks in period $`t`$ are then used to calculate the implicit interest rate in $`t+1`$
+To project the implicit interest rate forward, we calculate the new issuance and total stock of short-term and long-term debt in each period $`t`$. Gross financing needs, i.e. the size of new issuance, are the sum of all interest and amortization payments, and the primary balance. Here, interest on short-term debt is the product of short-term market rates and the stock of short-term debt in $`t-1`$. Interest on long-term debt is the product of the implied interest rate on long-term debt $`iir_t^{LT}`$ and the long-term debt stock in $`t-1`$. Short-term debt is redeemed entirely each period. The share of long-term debt maturing each year starts at the share of long-term debt with maturity below one year in total long-term debt in the latest ECB data and converges by $`T+10`$ to its historical average (ECB). Loans from the ESM/EFSF follow their repayment schedule. Optionally (`bond_data=True`), long-term debt outstanding in $`T`$ is instead repaid according to a repayment profile: by default, Eurostat debt by residual maturity at the end of $`T-1`$ (short-term debt and ESM/EFSF loans deducted, maturity buckets spread evenly over their years, debt maturing after 30 years over 20 years), scaled to long-term debt in $`T`$; new long-term debt is then repaid evenly over 20 years. Given gross financing needs, the share of newly issued short- and long-term debt is calculated such that the share of short-term debt in total debt is held constant. The resulting debt issuances and stocks in period $`t`$ are then used to calculate the implicit interest rate in $`t+1`$
 
 ### Stochastic Debt Projections
 
@@ -226,7 +226,7 @@ Quarterly shocks for nominal GDP growth, the primary balance, the nominal exchan
 \epsilon_t^{i^{LT}} = \frac{t}{T} \sum_{q=-4t}^{4} \epsilon_q^{i^{LT}},
 ```
 
-where $`T`$ denotes the average maturity of long-term debt in years, calculated as one over the historical average share of long-term debt maturing, and $`q`$ denotes the quarters of historical shocks being aggregated. Finally, shocks to the implicit interest rate on government debt are calculated as a weighted average of annualized shocks to the short- and long-term interest rates:
+where $`T`$ denotes the average residual maturity of debt in years (Eurostat; where not available, one over the historical average share of long-term debt maturing), and $`q`$ denotes the quarters of historical shocks being aggregated. Finally, shocks to the implicit interest rate on government debt are calculated as a weighted average of annualized shocks to the short- and long-term interest rates:
 
 ```math
 \epsilon_t^{iir} = \alpha^{ST} \epsilon_t^{i^{ST}} + (1 - \alpha^{ST}) \epsilon_t^{i^{LT}},
