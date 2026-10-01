@@ -55,7 +55,7 @@ Blank cells are filled by the model following the Commission methodology (interp
 | Workbook | Content |
 |---|---|
 | `dsa_inputs_<yyyy_mm>.xlsx` (default: most recent) | Up-to-date public data (API mode), market anchors from the latest Commission guidance, fiscal multiplier 0.75 with persistent effect on the output gap |
-| `dsa_inputs_commission_2024.xlsx` | All inputs from the Commission prior guidance calculation sheets (2024 guidance), reproducing the Commission reference trajectories (Commission output gap rule) |
+| `dsa_inputs_commission_2024.xlsx` | All inputs from the Commission prior guidance calculation sheets (2024 guidance), reproducing the Commission reference trajectories (Commission output gap rule); plus the optional Eurostat repayment profile of long-term debt (`BOND_REPAYMENT`, used with `bond_data=True`) |
 | `dsa_inputs_commission_latest.xlsx` | As above, latest guidance per country (e.g. IE and NL 2025, CZ 2026, which use a fiscal multiplier of 0.6) |
 | `dsa_inputs_2025_10.xlsx` | Legacy October 2025 input data, for replication of earlier results |
 

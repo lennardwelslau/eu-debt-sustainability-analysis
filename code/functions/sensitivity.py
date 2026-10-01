@@ -150,21 +150,12 @@ def scale_ageing_cost(model, factor):
     model.ageing_cost = model.ageing_cost[0] + factor * (model.ageing_cost - model.ageing_cost[0])
 
 
-@functools.lru_cache(maxsize=4)
-def _load_profiles(path):
-    with open(path) as f:
-        return json.load(f)
-
-
-def apply_repayment_profile(model, path):
+def use_repayment_profile(model):
     """
-    Repayment profile of long-term debt (bond_data=True) from a JSON file {ISO3: {year: value}} written by
-    save_repayment_profiles. Countries without a profile keep the share of long-term debt maturing each year.
+    Repayment profile of long-term debt from the input workbook (BOND_REPAYMENT, bond_data=True) where the workbook has
+    one; other countries keep the share of long-term debt maturing each year (used in the global draws).
     """
-    profile = _load_profiles(path).get(model.country)
-    if profile:
-        for year, value in profile.items():
-            model.df_deterministic_data.loc[int(year), 'BOND_REPAYMENT'] = value
+    if model.df_deterministic_data.loc[model.start_year + 1:, 'BOND_REPAYMENT'].notna().any():
         model.bond_data = True
         model._clean_bond_repayment()
 
@@ -209,13 +200,12 @@ ASSUMPTIONS = {
 }
 
 # Discrete settings drawn in the global sensitivity analysis: name -> (label, [(value, spec fields)]), the baseline
-# setting included. Values are numbers (used as such in the variance decomposition) or strings (categories). The
-# repayment profile needs the path of a profile file (save_repayment_profiles), set in build_global_specs.
+# setting included. Values are numbers (used as such in the variance decomposition) or strings (categories).
 DISCRETE_ASSUMPTIONS = {
     'ageing_cost_period': ('Ageing cost period', [(p, {'model_kwargs': {'ageing_cost_period': p}}) for p in [0, 5, 10, 15]]),
     'stock_flow_zero': ('Stock-flow adjustment zero after T', [
         (0, {}), (1, _override('STOCK_FLOW_RATIO', 'after', value=0))]),
-    'repayment_profile': ('Repayment profile (Eurostat)', [(0, {}), (1, {})]),
+    'repayment_profile': ('Repayment profile (Eurostat)', [(0, {}), (1, {'setup': [use_repayment_profile]})]),
     'multiplier_persistence': ('Multiplier persistence', [
         (p, {'model_kwargs': {'fiscal_multiplier_persistence': p}}) for p in [1, 2, 3, 4, 5]]),
     'prob_target': ('Probability target', [(p, {'attributes': {'prob_target': p}}) for p in [0.6, 0.7, 0.8, 0.9]]),
@@ -267,45 +257,9 @@ def assumption_spec(name, value, **kwargs):
                      **{**fields(value), **kwargs})
 
 
-def save_repayment_profiles(profiles, path=None):
-    """
-    Save repayment profiles (eurostat_repayment_profiles) to a JSON file for the global draws; returns the path.
-    """
-    path = str(path or OUTPUT_DIR / 'repayment_profiles.json')
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'w') as f:
-        json.dump(profiles, f)
-    return path
-
-
-def eurostat_repayment_profiles(input_file, countries, end_year=2070):
-    """
-    Repayment profiles from Eurostat for the reference year T of each country in input_file (data_pipeline.maturity),
-    {ISO3: {year: value}}: repayments of the long-term debt outstanding at the end of T-1 (excluding short-term debt and
-    the ESM/EFSF loans of the workbook), T+1 to end_year, rescaled to the long-term debt excluding ESM/EFSF loans of the
-    workbook in T. The model scales the profile to that debt in any case (DsaModel._clean_bond_repayment); rescaling
-    here makes it independent of the units of the workbook (the Commission workbooks index nominal GDP, so debt is not
-    in bn). Countries without Eurostat data are omitted. Fetches data from Eurostat (call once, before the runs).
-    """
-    from data_pipeline.maturity import fetch_maturity_data, repayment_profiles
-    data = fetch_maturity_data(countries)
-    T, esm, stock = {}, {}, {}
-    for c in countries:
-        series, params = read_country(input_file, c)
-        T[c] = int(params['REFERENCE_YEAR'])
-        esm[c] = series['ESM_REPAYMENT']
-        stock[c] = (series.loc[T[c], 'DEBT_TOTAL'] * (1 - params['DEBT_ST_SHARE'])
-                    - series.loc[T[c] + 1:, 'ESM_REPAYMENT'].fillna(0).sum())
-    profiles, _ = repayment_profiles(data, countries, T, pd.DataFrame(esm), end_year=end_year)
-    profiles = profiles / profiles.sum() * pd.Series(stock)[profiles.columns]
-    return {c: {int(y): float(v) for y, v in profiles[c].dropna().items()} for c in profiles}
-
-
-def build_oat_specs(latest_file=None, repayment_profiles=None):
+def build_oat_specs(latest_file=None):
     """
     Individual checks (baseline first). latest_file: workbook for the data vintage check (default latest_input_file()).
-    repayment_profiles: Eurostat repayment profiles for the repayment profile check (eurostat_repayment_profiles), None
-    omits it.
     """
     specs = [baseline_spec()]
     spec = make_spec
@@ -317,12 +271,10 @@ def build_oat_specs(latest_file=None, repayment_profiles=None):
     specs.append(spec('data:latest', 'Data', 'Data revisions',
                       f"latest vintage ({os.path.splitext(os.path.basename(latest_file))[0].replace('dsa_inputs_', '')})",
                       input_file=latest_file))
-    # Repayment profile of long-term debt from Eurostat debt by residual maturity (bond_data=True) instead of the share
-    # of long-term debt maturing each year. Countries without Eurostat data fail these runs (no result).
-    if repayment_profiles is not None:
-        specs.append(spec('data:repayment_profile', 'Data', 'Repayment profile (Eurostat)', 'residual maturity buckets',
-                          model_kwargs={'bond_data': True},
-                          overrides=[{'code': 'BOND_REPAYMENT', 'years': 'values', 'values': repayment_profiles}]))
+    # Repayment profile of long-term debt (BOND_REPAYMENT in the input workbook, from Eurostat debt by residual maturity)
+    # instead of the share of long-term debt maturing each year. Countries without Eurostat data fail these runs.
+    specs.append(spec('data:repayment_profile', 'Data', 'Repayment profile (Eurostat)', 'residual maturity buckets',
+                      model_kwargs={'bond_data': True}))
 
     # 2. Macro assumptions
     for name in ['rate_st_T10', 'rate_lt_T10', 'rate_st_T30', 'rate_lt_T30', 'inflation_T10', 'inflation_T30',
@@ -362,12 +314,11 @@ def build_oat_specs(latest_file=None, repayment_profiles=None):
     return specs
 
 
-def build_global_specs(n_draws=200, seed=0, assumptions=GLOBAL_ASSUMPTIONS, profiles_path=None):
+def build_global_specs(n_draws=200, seed=0, assumptions=GLOBAL_ASSUMPTIONS):
     """
     Global sensitivity analysis: n_draws Latin hypercube draws of all assumptions at once, with the stochastic
     criterion. Continuous assumptions (ASSUMPTIONS) are drawn uniformly over the range of their values in the individual
-    checks, discrete settings (DISCRETE_ASSUMPTIONS) with equal probability for each setting. profiles_path: JSON file
-    of the Eurostat repayment profiles (save_repayment_profiles), required if 'repayment_profile' is drawn. The first
+    checks, discrete settings (DISCRETE_ASSUMPTIONS) with equal probability for each setting. The first
     spec is the baseline. Data revisions and the random seed are not drawn.
     """
     from scipy.stats import qmc
@@ -379,8 +330,6 @@ def build_global_specs(n_draws=200, seed=0, assumptions=GLOBAL_ASSUMPTIONS, prof
             if name in DISCRETE_ASSUMPTIONS:
                 options = DISCRETE_ASSUMPTIONS[name][1]
                 v, part_fields = options[min(int(x * len(options)), len(options) - 1)]
-                if name == 'repayment_profile' and v == 1:
-                    part_fields = {'setup': [functools.partial(apply_repayment_profile, path=str(profiles_path))]}
             else:
                 lo, hi = min(ASSUMPTIONS[name][4]), max(ASSUMPTIONS[name][4])
                 v = float(lo + x * (hi - lo))
