@@ -3,24 +3,24 @@
 # ========================================================================================= #
 #
 # Helper functions for code/exercises/sensitivity_analysis.ipynb. The exercise runs the model
-# (StochasticDsaModel.find_spb_binding) under alternative data, assumptions and rules and records
-# how the binding SPB target responds. It has five parts:
+# (StochasticDsaModel.find_spb_binding) under alternative data and assumptions and records how the SPB
+# target responds. It has four parts:
 #
 # 1. Specifications: each check is one spec, a dict with model keyword arguments, model attributes,
 #    input overrides (relative to the baseline data), find_spb_binding keyword arguments and optional
-#    setup functions applied after initialisation (build_oat_specs, build_global_specs, combine_specs).
+#    setup functions applied after initialisation (build_oat_specs, build_global_specs).
 # 2. Runner: run_specs runs specs for countries and adjustment periods in parallel (ProcessPoolExecutor)
 #    and caches results by task, so reruns only compute missing tasks.
 # 3. Results: one tidy DataFrame with one row per spec, country and adjustment period, deviations from the
-#    baseline, noise band from alternative seeds, bundles and variance decomposition.
-# 4. Charts: heatmap, ranges, tornado, response curves, binding criterion shares, debt paths, global
-#    variance shares.
+#    baseline, noise band from alternative seeds, main table of effects by check, accommodative and
+#    restrictive combinations from the global draws and variance decomposition (aggregated over countries).
+# 4. Charts: mean effect by check, range of targets by country, debt paths by country.
 #
 # Setup functions must be defined at module level (not in a notebook) so that specs can be sent to worker
 # processes; use functools.partial to pass arguments.
 #
 # Author: Lennard Welslau
-# Updated: 2026-09-30
+# Updated: 2026-10-01
 # ========================================================================================= #
 
 import contextlib
@@ -36,21 +36,17 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 from data_pipeline import read_country, latest_input_file, resolve_input_path, REPO_ROOT, PARAMETERS
-from data_pipeline.validate import RULE_SWITCHES
 
 OUTPUT_DIR = REPO_ROOT / 'output' / 'sensitivity'
 
-# Colours (categorical order fixed; diverging blue-grey-red for deviations from the baseline)
-COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948']
-GREY, LIGHT_GREY, INK, MUTED = '#8c8b87', '#e4e3df', '#0b0b0b', '#52514e'
-LOWER, HIGHER = '#2a78d6', '#e34948'  # lower / higher SPB target than the baseline
-DIVERGING = mcolors.LinearSegmentedColormap.from_list('dsa_div', ['#104281', '#6da7ec', '#f0efec', '#f0908f', '#a3201f'])
-COMMISSION, BASELINE, ACCOMMODATIVE, STRICT, CURRENT = INK, COLORS[3], LOWER, HIGHER, GREY
+# Colours: matplotlib default cycle, black for the baseline, grey for ranges
+GREY, LIGHT_GREY, INK, MUTED = 'grey', 'lightgrey', 'black', 'dimgrey'
+BASELINE, ACCOMMODATIVE, RESTRICTIVE, COMMISSION, CURRENT = 'black', 'C2', 'C3', 'C1', 'grey'
+TARGET_LABELS = {'dsa': 'DSA criteria', 'binding': 'DSA, EDP and safeguards'}
 
 
 # ========================================================================================= #
@@ -59,7 +55,7 @@ COMMISSION, BASELINE, ACCOMMODATIVE, STRICT, CURRENT = INK, COLORS[3], LOWER, HI
 
 def make_spec(id, group, check, variant, value=np.nan, base_value=np.nan, knob=None, model_kwargs=None,
               attributes=None, overrides=None, binding_kwargs=None, setup=None, input_file=None, seed=None,
-              bundle=True, params=None):
+              params=None):
     """
     One sensitivity check.
 
@@ -69,7 +65,7 @@ def make_spec(id, group, check, variant, value=np.nan, base_value=np.nan, knob=N
         value (float): Numeric value of the variant (x-axis of response curves), NaN if not numeric.
         base_value (float or str): Value of the baseline on the same scale, or the name of a recorded result column
             (e.g. 'fiscal_multiplier') if it differs by country.
-        knob (str): Setting changed by the spec; specs with the same knob are alternatives (one per bundle).
+        knob (str): Setting changed by the spec; specs with the same knob are alternatives.
         model_kwargs (dict): Keyword arguments of StochasticDsaModel. 'adjustment_start_delay' (years) shifts the
             adjustment start relative to the input file reference year.
         attributes (dict): Model attributes set after initialisation (e.g. {'adverse_r_g_shock': 1.0}).
@@ -82,14 +78,13 @@ def make_spec(id, group, check, variant, value=np.nan, base_value=np.nan, knob=N
         setup (list): Functions applied to the model after initialisation (module level, see header).
         input_file (str): Input workbook replacing the baseline workbook.
         seed (int): Random seed replacing the baseline seed.
-        bundle (bool): Whether the spec can enter the accommodative and strict bundles (see define_bundles).
         params (dict): Parameter values of global sensitivity draws.
     """
     return {
         'id': id, 'group': group, 'check': check, 'variant': variant, 'value': value, 'base_value': base_value,
         'knob': knob or check, 'model_kwargs': model_kwargs or {}, 'attributes': attributes or {},
         'overrides': overrides or [], 'binding_kwargs': binding_kwargs or {}, 'setup': list(setup or []),
-        'input_file': input_file, 'seed': seed, 'bundle': bundle, 'params': params or {},
+        'input_file': input_file, 'seed': seed, 'params': params or {},
     }
 
 
@@ -98,9 +93,9 @@ def baseline_spec(stochastic=True):
     Baseline: input workbook, rules and seed of the run.
     """
     if stochastic:
-        return make_spec('baseline', 'Baseline', 'Baseline', 'baseline', bundle=False)
+        return make_spec('baseline', 'Baseline', 'Baseline', 'baseline')
     return make_spec('baseline_deterministic', 'Baseline', 'Baseline (deterministic)', 'baseline',
-                     binding_kwargs={'stochastic': False}, bundle=False)
+                     binding_kwargs={'stochastic': False})
 
 
 # Setup functions ----------------------------------------------------------------------- #
@@ -155,6 +150,25 @@ def scale_ageing_cost(model, factor):
     model.ageing_cost = model.ageing_cost[0] + factor * (model.ageing_cost - model.ageing_cost[0])
 
 
+@functools.lru_cache(maxsize=4)
+def _load_profiles(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def apply_repayment_profile(model, path):
+    """
+    Repayment profile of long-term debt (bond_data=True) from a JSON file {ISO3: {year: value}} written by
+    save_repayment_profiles. Countries without a profile keep the share of long-term debt maturing each year.
+    """
+    profile = _load_profiles(path).get(model.country)
+    if profile:
+        for year, value in profile.items():
+            model.df_deterministic_data.loc[int(year), 'BOND_REPAYMENT'] = value
+        model.bond_data = True
+        model._clean_bond_repayment()
+
+
 def stochastic_start_at_adjustment(model):
     """
     Start the stochastic projection in the first adjustment year instead of the year after the adjustment period.
@@ -166,7 +180,7 @@ def stochastic_start_at_adjustment(model):
     model.draw_period = model.stochastic_period * (4 if model.shock_frequency == 'quarterly' else 1)
 
 
-# One-at-a-time checks ------------------------------------------------------------------ #
+# Individual checks ------------------------------------------------------------------ #
 
 # Continuous assumptions: name -> (group, check label, function value -> spec fields, baseline value, OAT values).
 # The global sensitivity analysis draws the same assumptions over the range of the OAT values.
@@ -194,19 +208,49 @@ ASSUMPTIONS = {
     'lower_spb_shock': ('Stress tests', 'Lower SPB shock', lambda v: {'attributes': {'lower_spb_shock': v}}, 0.5, [0.25, 1.0]),
 }
 
+# Discrete settings drawn in the global sensitivity analysis: name -> (label, [(value, spec fields)]), the baseline
+# setting included. Values are numbers (used as such in the variance decomposition) or strings (categories). The
+# repayment profile needs the path of a profile file (save_repayment_profiles), set in build_global_specs.
+DISCRETE_ASSUMPTIONS = {
+    'ageing_cost_period': ('Ageing cost period', [(p, {'model_kwargs': {'ageing_cost_period': p}}) for p in [0, 5, 10, 15]]),
+    'stock_flow_zero': ('Stock-flow adjustment zero after T', [
+        (0, {}), (1, _override('STOCK_FLOW_RATIO', 'after', value=0))]),
+    'repayment_profile': ('Repayment profile (Eurostat)', [(0, {}), (1, {})]),
+    'multiplier_persistence': ('Multiplier persistence', [
+        (p, {'model_kwargs': {'fiscal_multiplier_persistence': p}}) for p in [1, 2, 3, 4, 5]]),
+    'prob_target': ('Probability target', [(p, {'attributes': {'prob_target': p}}) for p in [0.6, 0.7, 0.8, 0.9]]),
+    'stochastic_period': ('Stochastic period', [(p, {'model_kwargs': {'stochastic_period': p}}) for p in [5, 10]]),
+    'stochastic_start': ('Stochastic start in first adjustment year', [
+        (0, {}), (1, {'setup': [stochastic_start_at_adjustment]})]),
+    'shock_sample_start': ('Shock sample start', [(y, {'model_kwargs': {'shock_sample_start': y}}) for y in [1990, 2000, 2010]]),
+    'shock_frequency_annual': ('Annual shock frequency', [(0, {}), (1, {'model_kwargs': {'shock_frequency': 'annual'}})]),
+    'var_bootstrap': ('Shock estimation: VAR bootstrap', [(0, {}), (1, {'model_kwargs': {'estimation': 'var_bootstrap'}})]),
+    'winsorize_off': ('Winsorised shocks off', [(0, {}), (1, {'model_kwargs': {'winsorize_sample': False}})]),
+}
+
 # Assumptions varied in the global sensitivity analysis
 GLOBAL_ASSUMPTIONS = ['rate_st_T10', 'rate_lt_T10', 'rate_st_T30', 'rate_lt_T30', 'inflation_T10',
                       'inflation_T30', 'potential_growth', 'ageing_scale', 'elasticity_scale', 'fiscal_multiplier',
-                      'adverse_r_g_shock', 'financial_stress_shock', 'lower_spb_shock']
+                      'adverse_r_g_shock', 'financial_stress_shock', 'lower_spb_shock'] + list(DISCRETE_ASSUMPTIONS)
 
 # Categories of the global variance decomposition
 GLOBAL_CATEGORIES = {
     'Interest rates': ['rate_st_T10', 'rate_lt_T10', 'rate_st_T30', 'rate_lt_T30'],
     'Inflation': ['inflation_T10', 'inflation_T30'],
-    'Growth and ageing': ['potential_growth', 'ageing_scale'],
-    'Multiplier and elasticity': ['fiscal_multiplier', 'elasticity_scale'],
+    'Growth, ageing and stock-flow': ['potential_growth', 'ageing_scale', 'ageing_cost_period', 'stock_flow_zero'],
+    'Debt repayment': ['repayment_profile'],
+    'Multiplier and elasticity': ['fiscal_multiplier', 'multiplier_persistence', 'elasticity_scale'],
     'Stress-test calibration': ['adverse_r_g_shock', 'financial_stress_shock', 'lower_spb_shock'],
+    'Stochastic analysis': ['prob_target', 'stochastic_period', 'stochastic_start', 'shock_sample_start',
+                            'shock_frequency_annual', 'var_bootstrap', 'winsorize_off'],
 }
+
+
+def assumption_label(name):
+    """
+    Label of an assumption of the global analysis.
+    """
+    return ASSUMPTIONS[name][1] if name in ASSUMPTIONS else DISCRETE_ASSUMPTIONS[name][0]
 
 
 def _fmt(v):
@@ -221,6 +265,17 @@ def assumption_spec(name, value, **kwargs):
     variant = f'x{value:g}' if name.endswith('scale') else (f'{value:g}' if not isinstance(base, (int, float)) or base != 0 else _fmt(value))
     return make_spec(f'{group.lower().split()[0]}:{name}:{variant}', group, check, variant, value=value, base_value=base, knob=name,
                      **{**fields(value), **kwargs})
+
+
+def save_repayment_profiles(profiles, path=None):
+    """
+    Save repayment profiles (eurostat_repayment_profiles) to a JSON file for the global draws; returns the path.
+    """
+    path = str(path or OUTPUT_DIR / 'repayment_profiles.json')
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        json.dump(profiles, f)
+    return path
 
 
 def eurostat_repayment_profiles(input_file, countries, end_year=2070):
@@ -248,7 +303,7 @@ def eurostat_repayment_profiles(input_file, countries, end_year=2070):
 
 def build_oat_specs(latest_file=None, repayment_profiles=None):
     """
-    One-at-a-time checks (baseline first). latest_file: workbook for the data vintage check (default latest_input_file()).
+    Individual checks (baseline first). latest_file: workbook for the data vintage check (default latest_input_file()).
     repayment_profiles: Eurostat repayment profiles for the repayment profile check (eurostat_repayment_profiles), None
     omits it.
     """
@@ -261,12 +316,12 @@ def build_oat_specs(latest_file=None, repayment_profiles=None):
     # check shows how revisions of the data (forecasts for T and later years replaced by outturns) change the targets.
     specs.append(spec('data:latest', 'Data', 'Data revisions',
                       f"latest vintage ({os.path.splitext(os.path.basename(latest_file))[0].replace('dsa_inputs_', '')})",
-                      input_file=latest_file, bundle=False))
+                      input_file=latest_file))
     # Repayment profile of long-term debt from Eurostat debt by residual maturity (bond_data=True) instead of the share
     # of long-term debt maturing each year. Countries without Eurostat data fail these runs (no result).
     if repayment_profiles is not None:
         specs.append(spec('data:repayment_profile', 'Data', 'Repayment profile (Eurostat)', 'residual maturity buckets',
-                          model_kwargs={'bond_data': True}, bundle=False,
+                          model_kwargs={'bond_data': True},
                           overrides=[{'code': 'BOND_REPAYMENT', 'years': 'values', 'values': repayment_profiles}]))
 
     # 2. Macro assumptions
@@ -299,46 +354,41 @@ def build_oat_specs(latest_file=None, repayment_profiles=None):
                    model_kwargs={'shock_sample_start': y}) for y in [1990, 2010]]
     specs.append(spec('stochastic:frequency:annual', 'Stochastic', 'Shock frequency', 'annual',
                       model_kwargs={'shock_frequency': 'annual'}))
-    specs += [spec(f'stochastic:estimation:{e}', 'Stochastic', 'Shock estimation', e, model_kwargs={'estimation': e})
-              for e in ['var_cholesky', 'var_bootstrap']]
+    specs.append(spec('stochastic:estimation:var_bootstrap', 'Stochastic', 'Shock estimation', 'var_bootstrap',
+                      model_kwargs={'estimation': 'var_bootstrap'}))
     specs.append(spec('stochastic:winsorize:off', 'Stochastic', 'Winsorised shocks', 'off',
                       model_kwargs={'winsorize_sample': False}))
-    for criteria in (['debt_declines'], ['debt_declines', 'debt_below_60']):
-        label = ' or '.join(c.replace('debt_', 'debt ').replace('_', ' ') for c in criteria)
-        specs.append(spec(f'stochastic:criteria:{"+".join(criteria)}', 'Stochastic', 'Stochastic criteria', label,
-                          binding_kwargs={'stochastic_criteria': criteria}))
-    specs += [spec(f'noise:seed:{s}', 'Noise', 'Random seed', str(s), seed=s, bundle=False) for s in range(1, 10)]
-
-    # 6. Rules
-    specs.append(spec('rules:default', 'Rules', 'Rules', 'default rules', knob='rules', binding_kwargs={'rules': 'default'}))
-    for label, options in RULE_SWITCHES.items():
-        if label not in ('Commission rules', 'Default rules'):
-            specs.append(spec(f'rules:switch:{label}', 'Rules', 'Rules', f'{label} switched to default', knob='rules',
-                              binding_kwargs=dict(options)))
-    # EDP status True/False overrides a Council decision (a fact, like the data) and is not used in the bundles
-    specs += [spec(f'rules:edp_status:{s}', 'Rules', 'EDP status in T', str(s), binding_kwargs={'edp_status': s},
-                   bundle=s == 'infer') for s in ['infer', True, False]]
+    specs += [spec(f'noise:seed:{s}', 'Noise', 'Random seed', str(s), seed=s) for s in range(1, 10)]
     return specs
 
 
-def build_global_specs(n_draws=200, seed=0, assumptions=GLOBAL_ASSUMPTIONS):
+def build_global_specs(n_draws=200, seed=0, assumptions=GLOBAL_ASSUMPTIONS, profiles_path=None):
     """
-    Global sensitivity analysis: n_draws Latin hypercube draws of the assumptions over the range of their one-at-a-time
-    values, deterministic criteria only (stochastic=False). First spec is the deterministic baseline.
+    Global sensitivity analysis: n_draws Latin hypercube draws of all assumptions at once, with the stochastic
+    criterion. Continuous assumptions (ASSUMPTIONS) are drawn uniformly over the range of their values in the individual
+    checks, discrete settings (DISCRETE_ASSUMPTIONS) with equal probability for each setting. profiles_path: JSON file
+    of the Eurostat repayment profiles (save_repayment_profiles), required if 'repayment_profile' is drawn. The first
+    spec is the baseline. Data revisions and the random seed are not drawn.
     """
     from scipy.stats import qmc
     sample = qmc.LatinHypercube(d=len(assumptions), seed=seed).random(n_draws)
-    specs = [baseline_spec(stochastic=False)]
+    specs = [baseline_spec()]
     for i, u in enumerate(sample):
-        fields, params = {'model_kwargs': {}, 'attributes': {}, 'overrides': [], 'setup': []}, {}
+        fields, params = {'model_kwargs': {}, 'attributes': {}, 'overrides': [], 'setup': [], 'binding_kwargs': {}}, {}
         for name, x in zip(assumptions, u):
-            lo, hi = min(ASSUMPTIONS[name][4]), max(ASSUMPTIONS[name][4])
-            v = float(lo + x * (hi - lo))
+            if name in DISCRETE_ASSUMPTIONS:
+                options = DISCRETE_ASSUMPTIONS[name][1]
+                v, part_fields = options[min(int(x * len(options)), len(options) - 1)]
+                if name == 'repayment_profile' and v == 1:
+                    part_fields = {'setup': [functools.partial(apply_repayment_profile, path=str(profiles_path))]}
+            else:
+                lo, hi = min(ASSUMPTIONS[name][4]), max(ASSUMPTIONS[name][4])
+                v = float(lo + x * (hi - lo))
+                part_fields = ASSUMPTIONS[name][2](v)
             params[name] = v
-            for k, part in ASSUMPTIONS[name][2](v).items():
+            for k, part in part_fields.items():
                 fields[k] = {**fields[k], **part} if isinstance(part, dict) else fields[k] + part
-        specs.append(make_spec(f'global:{i:03d}', 'Global', 'Global draw', f'{i:03d}', binding_kwargs={'stochastic': False},
-                               bundle=False, params=params, **fields))
+        specs.append(make_spec(f'global:{i:03d}', 'Global', 'Global draw', f'{i:03d}', params=params, **fields))
     return specs
 
 
@@ -364,30 +414,6 @@ def spec_table(specs):
         'other': ', '.join(x for x in [f"input file {s['input_file']}" if s['input_file'] else '',
                                        f"seed {s['seed']}" if s['seed'] is not None else ''] if x),
     } for s in specs]).set_index('id')
-
-
-def combine_specs(specs, id, label):
-    """
-    Combine specs into one (e.g. a bundle). Raises an error if two specs set the same model argument, attribute,
-    input or rule option to different values.
-    """
-    out = make_spec(id, 'Bundles', 'Bundle', label, bundle=False)
-    for s in specs:
-        for field in ['model_kwargs', 'attributes', 'binding_kwargs']:
-            for k, v in s[field].items():
-                if k in out[field] and out[field][k] != v:
-                    raise ValueError(f"Specs set {field}['{k}'] to different values ({out[field][k]} and {v})")
-                out[field][k] = v
-        codes = {o['code'] for o in out['overrides']}
-        clash = codes & {o['code'] for o in s['overrides']}
-        if clash:
-            raise ValueError(f'Specs change the same inputs: {sorted(clash)}')
-        out['overrides'] += s['overrides']
-        out['setup'] += s['setup']
-        if s['input_file']:
-            raise ValueError('Specs with another input file cannot be combined')
-    out['components'] = [s['id'] for s in specs]
-    return out
 
 
 # ========================================================================================= #
@@ -613,7 +639,7 @@ def run_specs(specs, countries, adjustment_periods=(4, 7), input_file=None, rule
     rerun. With run=False, only cached results are returned.
 
     Parameters:
-        specs (list): Specs (build_oat_specs, build_global_specs, combine_specs).
+        specs (list): Specs (build_oat_specs, build_global_specs).
         input_file (str): Baseline input workbook.
         rules (str): Baseline rules of find_spb_binding ('commission' or 'default').
         seed (int): Random seed set before each run (specs can set their own).
@@ -739,111 +765,85 @@ def noise_band(df, target='dsa', group='Noise'):
         noise_low='min', noise_high='max').reset_index()
 
 
-CRITERION_GROUPS = ['Debt, deterministic scenarios', 'Debt, stochastic', 'Deficit below 3%', 'Debt safeguard',
-                    'Non-negative adjustment', 'Other']
-
-
-def criterion_group(criterion):
+def effects_table(df, adjustment_periods=(4, 7), exclude_groups=('Baseline', 'Noise', 'Global'), threshold=0.1):
     """
-    Broad group of a binding criterion.
+    Main table: change of the SPB target relative to the baseline by check variant, mean, minimum and maximum across
+    countries (pp. of GDP) and the number of countries whose target changes by more than threshold (pp.), for the DSA
+    target (DSA criteria only) and the binding target (DSA criteria, EDP and safeguards), by adjustment period. Failed
+    runs (e.g. no data for a country) are left out.
     """
-    if not isinstance(criterion, str):
-        return 'Other'
-    if criterion.startswith(('debt_declines', 'debt_below_60')) or criterion in (
-            'main_adjustment', 'lower_spb', 'financial_stress', 'adverse_r_g'):
-        return 'Debt, deterministic scenarios'
-    return {'stochastic': 'Debt, stochastic', 'deficit_reduction': 'Deficit below 3%', 'debt_safeguard': 'Debt safeguard',
-            'floor': 'Non-negative adjustment'}.get(criterion, 'Other')
-
-
-def check_effects(df, target='dsa', noise=None):
-    """
-    Effect of each spec on the target: median, lower and upper quartile of the change across countries and adjustment
-    periods, largest absolute change, share of runs with a switch of the binding criterion, and the median noise band.
-    """
-    dt, sw = TARGETS[target]['delta_target'], TARGETS[target]['criterion_switch']
-    effects = df.groupby(['id', 'group', 'check', 'variant', 'knob'], sort=False).agg(
-        median=(dt, 'median'), q25=(dt, lambda x: x.quantile(0.25)), q75=(dt, lambda x: x.quantile(0.75)),
-        max_abs=(dt, lambda x: x.abs().max()), criterion_switches=(sw, 'mean'), runs=(dt, 'count')).reset_index()
-    if noise is not None:
-        effects['noise'] = (noise['noise_high'] - noise['noise_low']).median() / 2
-    return effects
-
-
-def define_bundles(df, specs, noise_halfwidth, min_effect=0.0, target='dsa', exclude_groups=('Data',)):
-    """
-    Accommodative and strict bundles from the one-at-a-time results. For each knob (setting changed by a spec), the
-    accommodative bundle takes the variant with the lowest median effect on the target across countries and adjustment
-    periods, the strict bundle the variant with the highest, provided the effect exceeds the noise band in that
-    direction and min_effect (pp.). Specs marked bundle=False (baseline, data vintage, seeds, EDP status) and groups in
-    exclude_groups are left out. Variants are added in order of the size of their effect; a variant that sets an option
-    already set by a variant with a larger effect is skipped (status 'conflict'). Returns (accommodative spec, strict
-    spec, table).
-    """
-    by_id = {s['id']: s for s in specs}
-    eligible = df[df['id'].map(lambda i: by_id[i]['bundle']) & ~df['group'].isin(exclude_groups)]
-    effects = eligible.groupby(['knob', 'id', 'check', 'variant'], sort=False)[TARGETS[target]['delta_target']].median()
-    effects = effects.rename('median').reset_index()
-    threshold = max(noise_halfwidth, min_effect)
-    picks = []
-    for knob, g in effects.groupby('knob', sort=False):
-        low, high = g.loc[g['median'].idxmin()], g.loc[g['median'].idxmax()]
-        if low['median'] < -threshold:
-            picks.append({**low.to_dict(), 'bundle': 'accommodative'})
-        if high['median'] > threshold:
-            picks.append({**high.to_dict(), 'bundle': 'strict'})
-    table = pd.DataFrame(picks, columns=['knob', 'id', 'check', 'variant', 'median', 'bundle'])
-    table = table.reindex(table['median'].abs().sort_values(ascending=False).index)
-    bundles, status = {}, {}
-    for name in ['accommodative', 'strict']:
-        selected = []
-        for i in table.loc[table['bundle'] == name, 'id']:
-            try:
-                combine_specs([by_id[j] for j in selected + [i]], 'check', '')
-                selected.append(i)
-                status[(name, i)] = 'included'
-            except ValueError:
-                status[(name, i)] = 'conflict'
-        bundles[name] = combine_specs([by_id[i] for i in selected], f'bundle:{name}', f'{name} bundle')
-    table['status'] = [status[(b, i)] for b, i in zip(table['bundle'], table['id'])]
-    table = table[['bundle', 'check', 'variant', 'median', 'status', 'id']].sort_values(['bundle', 'median'])
-    return bundles['accommodative'], bundles['strict'], table.reset_index(drop=True)
-
-
-def target_comparison(df, exclude_groups=('Noise', 'Bundles', 'Global', 'Baseline')):
-    """
-    Effect of each check on the DSA target and on the binding target: median absolute change across countries,
-    adjustment periods and variants, and the share of runs in which the EDP or the safeguards raise the binding target
-    above the DSA target (baseline share in column 'baseline_share_above_dsa').
-    """
-    d = df[~df['group'].isin(exclude_groups)].copy()
-    d['above_dsa'] = d['binding_target'] > d['dsa_target'] + 1e-3
-    dsa, binding = TARGETS['dsa']['delta_target'], TARGETS['binding']['delta_target']
-    out = d.groupby(['group', 'check'], sort=False).agg(
-        dsa=(dsa, lambda x: x.abs().median()), binding=(binding, lambda x: x.abs().median()),
-        dsa_mean=(dsa, lambda x: x.abs().mean()), binding_mean=(binding, lambda x: x.abs().mean()),
-        share_above_dsa=('above_dsa', 'mean')).reset_index()
-    base = df[df['id'] == 'baseline']
-    out['baseline_share_above_dsa'] = (base['binding_target'] > base['dsa_target'] + 1e-3).mean()
+    d = df[~df['group'].isin(exclude_groups)]
+    cols = {}
+    for n in adjustment_periods:
+        dn = d[d['adjustment_period'] == n]
+        for target, label in TARGET_LABELS.items():
+            g = dn.groupby(['group', 'check', 'variant'], sort=False)[TARGETS[target]['delta_target']]
+            for stat in ['mean', 'min', 'max']:
+                cols[(f'{n}-year adjustment', label, stat)] = g.agg(stat)
+            cols[(f'{n}-year adjustment', label, f'countries > {threshold:g} pp.')] = g.agg(
+                lambda x: int((x.abs() > threshold + 1e-9).sum()))
+    out = pd.DataFrame(cols)
+    out.columns.names = ['adjustment', 'target', 'statistic']
     return out
+
+
+COMBINATIONS = {'draws:accommodative': ('accommodative', 'lowest draw'), 'draws:restrictive': ('restrictive', 'highest draw')}
+
+
+def draw_combinations(glob, combinations=COMBINATIONS):
+    """
+    Accommodative and restrictive combinations of assumptions from the global draws (after add_deviations): for each
+    country, adjustment period and target, the draw with the lowest and the highest target. Returns runs in the format
+    of run_specs (group 'Global draws') with the target, its change, the annual adjustment and the debt path of that
+    draw, and the id of the draw ('draw'; per target).
+    """
+    draws = glob[glob['group'] == 'Global']
+    rows = []
+    for (c, n), g in draws.groupby(['country', 'adjustment_period']):
+        for cid, (label, which) in combinations.items():
+            row = {'id': cid, 'group': 'Global draws', 'check': 'Combined assumptions (global draws)',
+                   'variant': f'{label} ({which})', 'country': c, 'adjustment_period': n, 'T': g['T'].iloc[0]}
+            for key, cols in TARGETS.items():
+                d = g.dropna(subset=[cols['target']])
+                if not len(d):
+                    continue
+                i = d[cols['target']].idxmin() if which == 'lowest draw' else d[cols['target']].idxmax()
+                for col in ['target', 'delta_target', 'debt_path', 'annual_adjustment', 'criterion']:
+                    row[cols[col]] = d.loc[i, cols[col]]
+                row[f'{key}_draw'] = d.loc[i, 'id']
+            rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def variance_decomposition(df, target='dsa', assumptions=GLOBAL_ASSUMPTIONS, categories=GLOBAL_CATEGORIES):
     """
     Variance decomposition of the global sensitivity analysis by country and adjustment period: squared standardised
     regression coefficients of a linear regression of the target on the drawn assumptions (share of the variance of the
-    target explained by each assumption; the draws are close to uncorrelated), summed by category. The remainder
-    (1 - R2) is the variance from non-linear effects and interactions, e.g. switches of the binding criterion.
+    target explained by each assumption; the draws are close to uncorrelated), summed by category. Categorical settings
+    (string values) enter as dummies, whose shares are added up. The remainder (1 - R2) is the variance from non-linear
+    effects and interactions, e.g. switches of the binding criterion.
     """
     y = TARGETS[target]['target']
     rows = []
     for (c, n), g in df.dropna(subset=[y]).groupby(['country', 'adjustment_period']):
-        X, Y = g[assumptions].to_numpy(float), g[y].to_numpy(float)
-        if len(g) <= len(assumptions) + 1 or Y.std() < 1e-10:
+        parts, owner = [], []
+        for a in assumptions:
+            x = g[a]
+            if x.dtype == object:
+                dummies = pd.get_dummies(x.astype(str), drop_first=True, dtype=float)
+                parts.append(dummies.to_numpy())
+                owner += [a] * dummies.shape[1]
+            else:
+                parts.append(x.to_numpy(float)[:, None])
+                owner.append(a)
+        X, Y = np.column_stack(parts), g[y].to_numpy(float)
+        keep = X.std(0) > 0
+        X, owner = X[:, keep], [o for o, k in zip(owner, keep) if k]
+        if len(g) <= X.shape[1] + 1 or Y.std() < 1e-10:
             continue
         Xs = np.column_stack([np.ones(len(Y)), (X - X.mean(0)) / X.std(0)])
         coef = np.linalg.lstsq(Xs, Y, rcond=None)[0]
-        shares = pd.Series(coef[1:] ** 2 / Y.var(), index=assumptions)
+        shares = pd.Series(coef[1:] ** 2 / Y.var(), index=owner).groupby(level=0).sum().reindex(assumptions, fill_value=0.0)
         r2 = 1 - np.var(Y - Xs @ coef) / Y.var()
         row = {'country': c, 'adjustment_period': n, 'target': target, 'std': Y.std(), 'r2': r2}
         row.update({k: shares[v].sum() for k, v in categories.items()})
@@ -851,6 +851,28 @@ def variance_decomposition(df, target='dsa', assumptions=GLOBAL_ASSUMPTIONS, cat
         row.update({f'src2_{k}': v for k, v in shares.items()})
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def variance_table(vd, assumptions=GLOBAL_ASSUMPTIONS, categories=GLOBAL_CATEGORIES):
+    """
+    Variance decomposition of the global sensitivity analysis aggregated over countries (variance_decomposition):
+    share of the variance of the target explained by each assumption and category of assumptions, and by non-linear
+    effects and interactions, by adjustment period and target. Countries are weighted by the variance of their target,
+    so the shares refer to the variance summed over countries (countries whose target hardly moves count little).
+    The last row is the mean standard deviation of the target across countries.
+    """
+    names = {a: assumption_label(a) for a in assumptions}
+    cols = {}
+    for (n, target), g in vd.groupby(['adjustment_period', 'target'], sort=False):
+        w = g['std'] ** 2 / (g['std'] ** 2).sum()
+        s = {}
+        for category, members in categories.items():
+            s[(category, 'Total')] = (g[category] * w).sum()
+            s.update({(category, names[a]): (g[f'src2_{a}'] * w).sum() for a in members})
+        s[('Non-linear and interactions', '')] = (g['Non-linear and interactions'] * w).sum()
+        s[('Standard deviation of the target (pp.)', '')] = g['std'].mean()
+        cols[(f'{n}-year adjustment', TARGET_LABELS[target])] = pd.Series(s)
+    return pd.DataFrame(cols)
 
 
 # ========================================================================================= #
@@ -862,319 +884,114 @@ def _order_countries(df, period, target='dsa'):
     return base.sort_values(TARGETS[target]['target'])['country'].tolist()
 
 
-def _despine(ax):
-    for s in ['top', 'right']:
-        ax.spines[s].set_visible(False)
-
-
-def plot_heatmap(df, adjustment_period, target='dsa', countries=None, groups=None, vmax=1.0, figsize=None, title=None):
+def plot_mean_effects(df, adjustment_periods=(4, 7), exclude_groups=('Baseline', 'Noise', 'Global')):
     """
-    Heatmap of the change of the target by country (rows) and check variant (columns); dots mark a switch of the
-    binding criterion. Countries are ordered by their baseline target.
+    Mean change of the SPB target across countries by check variant (pp. of GDP, see effects_table): bars for the DSA
+    target, diamonds for the binding target (DSA criteria, EDP and safeguards). One panel per adjustment period.
     """
-    cols = TARGETS[target]
-    d = df[(df['adjustment_period'] == adjustment_period) & (df['id'] != 'baseline')]
-    if groups is not None:
-        d = d[d['group'].isin(groups)]
-    columns = list(dict.fromkeys(d['id']))
-    countries = countries or _order_countries(df, adjustment_period, target)[::-1]
-    values = d.pivot_table(index='country', columns='id', values=cols['delta_target'], aggfunc='first')
-    values = values.reindex(index=countries, columns=columns)
-    switch = d.pivot_table(index='country', columns='id', values=cols['criterion_switch'], aggfunc='first')
-    switch = switch.reindex(index=countries, columns=columns)
-    labels = d.drop_duplicates('id').set_index('id')
-    figsize = figsize or (max(10, 0.26 * len(columns) + 3), 0.3 * len(countries) + 3.2)
-    fig, ax = plt.subplots(figsize=figsize)
-    im = ax.imshow(values.to_numpy(float), cmap=DIVERGING, vmin=-vmax, vmax=vmax, aspect='auto', interpolation='none')
-    yy, xx = np.where(switch.fillna(False).to_numpy(bool))
-    ax.scatter(xx, yy, s=9, color=INK, marker='o', linewidths=0, label='Binding criterion switches')
-    ax.set_yticks(range(len(countries)), countries, fontsize=9)
-    ax.set_xticks(range(len(columns)), [f"{labels.loc[i, 'check']}: {labels.loc[i, 'variant']}" for i in columns],
-                  rotation=90, fontsize=7.5)
-    grp = labels.loc[columns, 'group'].tolist()
-    starts = [0] + [i for i in range(1, len(grp)) if grp[i] != grp[i - 1]]
-    for k, st in enumerate(starts):
-        end = starts[k + 1] if k + 1 < len(starts) else len(grp)
-        if st > 0:
-            ax.axvline(st - 0.5, color='white', lw=3)
-        ax.text((st + end - 1) / 2, -0.9, grp[st], ha='center', va='bottom', fontsize=10, color=INK, fontweight='bold')
-    ax.grid(False)
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-    cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.01, extend='both')
-    cbar.set_label('Change vs. baseline (pp.)')
-    cbar.outline.set_visible(False)
-    ax.legend(loc='upper left', bbox_to_anchor=(1.07, 1.0), frameon=False, fontsize=9)
-    ax.set_title(title or f"Sensitivity of the {cols['label']}, {adjustment_period}-year adjustment", loc='left', pad=28)
-    plt.tight_layout()
+    t = effects_table(df, adjustment_periods, exclude_groups)
+    groups = t.index.get_level_values('group')
+    labels = [f'{check}: {variant}' for _, check, variant in t.index]
+    y = np.arange(len(t))[::-1]
+    fig, axes = plt.subplots(1, len(adjustment_periods), figsize=(6 * len(adjustment_periods) + 5, 0.22 * len(t) + 1.6),
+                             sharey=True, squeeze=False)
+    for ax, n in zip(axes[0], adjustment_periods):
+        period = f'{n}-year adjustment'
+        ax.barh(y, t[(period, TARGET_LABELS['dsa'], 'mean')], height=0.7, color='C0', label='DSA criteria')
+        ax.scatter(t[(period, TARGET_LABELS['binding'], 'mean')], y, marker='D', s=18, color='black', zorder=3,
+                   label='DSA, EDP and safeguards')
+        ax.axvline(0, color='black', lw=0.8)
+        for k in range(1, len(groups)):
+            if groups[k] != groups[k - 1]:
+                ax.axhline(y[k] + 0.5, color='grey', lw=0.8)
+        if len(adjustment_periods) > 1:
+            ax.set_title(period)
+        ax.set_xlabel('Mean change across countries (pp. of GDP)')
+        ax.grid(axis='y', visible=False)
+    axes[0, 0].set_yticks(y, labels, fontsize=8)
+    axes[0, 0].set_ylim(-0.6, len(t) - 0.4)
+    handles, names = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, names, loc='lower center', ncol=2, frameon=False)
+    title = 'Change of the SPB target relative to the baseline'
+    if len(adjustment_periods) == 1:
+        title += f', {adjustment_periods[0]}-year adjustment'
+    fig.suptitle(title, fontweight='bold')
+    fig.tight_layout(rect=(0, 0.6 / fig.get_figheight(), 1, 1))
     return fig
 
 
-def plot_ranges(df, adjustment_period, target='dsa', bundles=('bundle:accommodative', 'bundle:strict'),
-                exclude_groups=('Noise', 'Global'), figsize=None):
+def plot_ranges(df, adjustment_period, target='dsa', combinations=tuple(COMBINATIONS),
+                exclude_groups=('Noise', 'Global'), exclude_ids=('data:latest',), figsize=(14, 5.5)):
     """
-    Range of targets across one-at-a-time checks by country, with the Commission target, the baseline, the bundles and
-    the SPB in T.
+    SPB targets by country (ordered by the baseline target): range across the individual checks of model assumptions
+    (grey bar; data revisions excluded), baseline, accommodative and restrictive combinations of the global draws
+    (lowest and highest draw, draw_combinations), Commission target and SPB in T.
     """
     cols = TARGETS[target]
     d = df[df['adjustment_period'] == adjustment_period]
     countries = _order_countries(d, adjustment_period, target)
-    oat = d[~d['group'].isin(exclude_groups + ('Bundles',))]
+    oat = d[~d['group'].isin(exclude_groups + ('Global draws',)) & ~d['id'].isin(exclude_ids)]
     rng = oat.groupby('country')[cols['target']].agg(['min', 'max']).reindex(countries)
     base = d[d['id'] == 'baseline'].set_index('country').reindex(countries)
-    fig, ax = plt.subplots(figsize=figsize or (9, 0.33 * len(countries) + 1.8))
-    y = np.arange(len(countries))
-    ax.hlines(y, rng['min'], rng['max'], color=LIGHT_GREY, lw=7, zorder=1, label='Range of one-at-a-time checks',
-              capstyle='round')
-    ax.scatter(base['spb_T'], y, marker='|', s=140, lw=2, color=CURRENT, zorder=2, label='SPB in T')
-    for bid, color, label, marker in [(bundles[0], ACCOMMODATIVE, 'Accommodative bundle', '<'),
-                                      (bundles[1], STRICT, 'Strict bundle', '>')]:
-        b = d[d['id'] == bid].set_index('country').reindex(countries)
-        if len(b) and b[cols['target']].notna().any():
-            ax.scatter(b[cols['target']], y, marker=marker, s=48, color=color, zorder=3, label=label,
-                       edgecolor='white', linewidth=0.8)
-    ax.scatter(base[cols['target']], y, marker='o', s=50, color=BASELINE, zorder=4, label='Model baseline',
-               edgecolor='white', linewidth=0.8)
+    x = np.arange(len(countries))
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.bar(x, rng['max'] - rng['min'], bottom=rng['min'], width=0.6, color=LIGHT_GREY, zorder=1,
+           label='Range of individual checks')
+    ax.scatter(x, base['spb_T'], marker='_', s=180, lw=2, color=CURRENT, zorder=2, label='SPB in T')
     if cols['commission'] in base and base[cols['commission']].notna().any():
-        ax.scatter(base[cols['commission']], y, marker='D', s=26, facecolor='none', edgecolor=COMMISSION, lw=1.3,
-                   zorder=5, label='Commission')
-    ax.set_yticks(y, countries)
-    ax.set_ylim(-0.7, len(countries) - 0.3)
-    ax.grid(axis='y', visible=False)
-    ax.set_xlabel('SPB at the end of the adjustment period (% of GDP)')
-    ax.set_title(f"{cols['label'][0].upper() + cols['label'][1:]}s, {adjustment_period}-year adjustment", loc='left')
-    ax.legend(loc='upper left', bbox_to_anchor=(1.01, 1.0), frameon=False, fontsize=10)
-    _despine(ax)
+        ax.scatter(x, base[cols['commission']], marker='D', s=30, facecolor='none', edgecolor=COMMISSION, lw=1.4,
+                   zorder=3, label='Commission')
+    for bid, color, label, marker in [(combinations[0], ACCOMMODATIVE, 'Accommodative (lowest draw)', 'v'),
+                                      (combinations[1], RESTRICTIVE, 'Restrictive (highest draw)', '^')]:
+        b = d[d['id'] == bid].set_index('country').reindex(countries)
+        if b[cols['target']].notna().any():
+            ax.scatter(x, b[cols['target']], marker=marker, s=40, color=color, zorder=4, label=label)
+    ax.scatter(x, base[cols['target']], marker='o', s=36, color=BASELINE, zorder=5, label='Baseline')
+    ax.set_xticks(x, countries)
+    ax.set_xlim(-0.6, len(countries) - 0.4)
+    ax.grid(axis='x', visible=False)
+    ax.set_ylabel('SPB at the end of the adjustment period (% of GDP)')
+    ax.set_title(f"{TARGET_LABELS[target]}, {adjustment_period}-year adjustment", loc='left')
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.08), ncol=3, frameon=False)
     plt.tight_layout()
     return fig
 
 
-def tornado_data(df, country=None, adjustment_period=4, target='dsa',
-                 exclude_groups=('Noise', 'Bundles', 'Global', 'Baseline')):
+def plot_debt_paths(df, adjustment_period=4, target='dsa', countries=None, ncols=5,
+                    exclude_groups=('Baseline', 'Noise', 'Global', 'Global draws'), exclude_ids=('data:latest',)):
     """
-    Lowest and highest change of the target by check for one country, or the median across countries (country=None).
-    """
-    dt = TARGETS[target]['delta_target']
-    d = df[(df['adjustment_period'] == adjustment_period) & ~df['group'].isin(exclude_groups)]
-    if country is not None:
-        d = d[d['country'] == country]
-    per_variant = d.groupby(['group', 'check', 'variant'], sort=False)[dt].median().reset_index()
-    rows = []
-    for (g, c), v in per_variant.groupby(['group', 'check'], sort=False):
-        lo, hi = v.loc[v[dt].idxmin()], v.loc[v[dt].idxmax()]
-        rows.append({'group': g, 'check': c, 'low': min(lo[dt], 0), 'high': max(hi[dt], 0),
-                     'low_variant': lo['variant'] if lo[dt] < 0 else '', 'high_variant': hi['variant'] if hi[dt] > 0 else ''})
-    t = pd.DataFrame(rows)
-    t['span'] = t['high'] - t['low']
-    return t.sort_values('span')
-
-
-def plot_tornado(df, noise, country=None, adjustment_period=4, target='dsa', top=18, ax=None):
-    """
-    Tornado chart: range of the change of the target by check (lower target in blue, higher in red), with the noise
-    band from alternative seeds (grey). country=None shows the median across countries.
-    """
-    t = tornado_data(df, country, adjustment_period, target).tail(top)
-    nb = noise[noise['adjustment_period'] == adjustment_period]
-    if country is not None:
-        nb = nb[nb['country'] == country]
-    lo, hi = nb['noise_low'].median(), nb['noise_high'].median()
-    if ax is None:
-        _, ax = plt.subplots(figsize=(8, 0.34 * len(t) + 1.5))
-    y = np.arange(len(t))
-    ax.axvspan(lo, hi, color=LIGHT_GREY, zorder=0, label='Noise band (seeds)')
-    ax.barh(y, t['low'], color=LOWER, height=0.62, zorder=2, label='Lower target')
-    ax.barh(y, t['high'], color=HIGHER, height=0.62, zorder=2, label='Higher target')
-    ax.axvline(0, color=INK, lw=0.8, zorder=3)
-    span = max(t['high'].max(), -t['low'].min(), 0.05)
-    for yi, (_, r) in zip(y, t.iterrows()):
-        if r['low_variant']:
-            ax.text(r['low'] - 0.02 * span, yi, r['low_variant'], ha='right', va='center', fontsize=8, color=MUTED)
-        if r['high_variant']:
-            ax.text(r['high'] + 0.02 * span, yi, r['high_variant'], ha='left', va='center', fontsize=8, color=MUTED)
-    ax.set_xlim(-span * 1.45, span * 1.45)
-    ax.set_yticks(y, t['check'], fontsize=9)
-    ax.grid(axis='y', visible=False)
-    ax.set_xlabel(f"Change in {TARGETS[target]['label']} (pp.)")
-    ax.set_title(f"{country or 'Median across countries'}, {adjustment_period}-year adjustment", loc='left', fontsize=12)
-    _despine(ax)
-    return ax
-
-
-def plot_response_curves(df, specs, adjustment_period=4, target='dsa', ncols=4, highlight=None):
-    """
-    Small multiples: change of the target by value of each numeric assumption, one line per country (grey) and the
-    median across countries (bold). The baseline point (zero change) is included.
-    """
-    dt = TARGETS[target]['delta_target']
-    by_id = {s['id']: s for s in specs}
-    d = df[(df['adjustment_period'] == adjustment_period) & df['value'].notna()
-           & ~df['group'].isin(['Noise', 'Bundles', 'Global', 'Baseline'])]
-    checks = [c for c, g in d.groupby('check', sort=False) if g['variant'].nunique() >= 2]
-    nrows = int(np.ceil(len(checks) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(3.4 * ncols, 2.7 * nrows), sharey=True)
-    axes = np.atleast_1d(axes).ravel()
-    for ax, check in zip(axes, checks):
-        g = d[d['check'] == check]
-        base_value = by_id[g['id'].iloc[0]]['base_value']
-        curves = {}
-        for c, gc in g.groupby('country'):
-            x0 = gc[base_value].iloc[0] if isinstance(base_value, str) else base_value
-            pts = pd.concat([gc[['value', dt]], pd.DataFrame({'value': [x0], dt: [0.0]})])
-            curves[c] = pts.groupby('value')[dt].mean().sort_index()
-            ax.plot(curves[c].index, curves[c].values, color=GREY, lw=0.8, alpha=0.45, zorder=1)
-        med = pd.DataFrame(curves).median(axis=1)
-        ax.plot(med.index, med.values, color=INK, lw=2.2, marker='o', ms=4, zorder=3)
-        if highlight in curves:
-            ax.plot(curves[highlight].index, curves[highlight].values, color=COLORS[1], lw=1.8, zorder=2)
-        ax.axhline(0, color=MUTED, lw=0.8)
-        ax.set_title(check, fontsize=10, loc='left')
-        ax.tick_params(labelsize=8)
-        ax.xaxis.set_major_locator(plt.MaxNLocator(nbins=5, steps=[1, 2, 2.5, 5, 10]))
-    for ax in axes[len(checks):]:
-        ax.set_visible(False)
-    for ax in axes[::ncols]:
-        ax.set_ylabel('Change (pp.)', fontsize=9)
-    handles = [Line2D([], [], color=INK, lw=2.2, marker='o', ms=4, label='EU median'),
-               Line2D([], [], color=GREY, lw=0.8, label='Countries')]
-    if highlight:
-        handles.append(Line2D([], [], color=COLORS[1], lw=1.8, label=highlight))
-    fig.tight_layout(rect=(0, 0, 1, 1 - 0.6 / fig.get_figheight()))
-    fig.legend(handles=handles, loc='upper right', ncol=len(handles), frameon=False, fontsize=10)
-    fig.suptitle(f"Response of the {TARGETS[target]['label']}, {adjustment_period}-year adjustment", x=0.01, y=0.995,
-                 ha='left', va='top', fontsize=13, fontweight='bold')
-    return fig
-
-
-def plot_criterion_shares(df, adjustment_period=4, target='dsa', by='check', exclude_groups=('Noise', 'Global')):
-    """
-    Share of runs by group of the binding criterion (see criterion_group), for the baseline and each check (share across
-    all variants of a check) or each variant (by='id').
-    """
-    d = df[(df['adjustment_period'] == adjustment_period) & ~df['group'].isin(exclude_groups)].copy()
-    d['criterion_group'] = d[TARGETS[target]['criterion']].map(criterion_group)
-    d['label'] = d['check'] if by == 'check' else d['check'] + ': ' + d['variant'].astype(str)
-    shares = pd.crosstab(d['label'], d['criterion_group'], normalize='index').reindex(columns=CRITERION_GROUPS, fill_value=0)
-    shares = shares.loc[list(dict.fromkeys(d['label']))]
-    fig, ax = plt.subplots(figsize=(9, 0.3 * len(shares) + 1.8))
-    left = np.zeros(len(shares))
-    y = np.arange(len(shares))[::-1]
-    colors = dict(zip(CRITERION_GROUPS, [COLORS[0], COLORS[2], COLORS[1], COLORS[6], COLORS[3], GREY]))
-    for cg in CRITERION_GROUPS:
-        if shares[cg].sum() == 0:
-            continue
-        ax.barh(y, shares[cg], left=left, color=colors[cg], height=0.72, label=cg, edgecolor='white', linewidth=1)
-        left += shares[cg].to_numpy()
-    ax.set_yticks(y, shares.index, fontsize=9)
-    ax.set_xlim(0, 1)
-    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f'{v:.0%}'))
-    ax.grid(axis='y', visible=False)
-    ax.set_title(f"Binding criterion of the {TARGETS[target]['label']}, {adjustment_period}-year adjustment", loc='left')
-    ax.legend(loc='upper left', bbox_to_anchor=(1.01, 1.0), frameon=False, fontsize=9)
-    _despine(ax)
-    plt.tight_layout()
-    return fig
-
-
-def plot_target_comparison(df):
-    """
-    Two panels by check: mean absolute change of the DSA target and of the binding target (left), and the share of
-    runs in which the EDP or the safeguards raise the binding target above the DSA target (right).
-    """
-    t = target_comparison(df).sort_values('dsa_mean')
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 0.32 * len(t) + 1.8), sharey=True,
-                                   gridspec_kw={'width_ratios': [2.2, 1]})
-    y = np.arange(len(t))
-    ax1.hlines(y, t[['dsa_mean', 'binding_mean']].min(axis=1), t[['dsa_mean', 'binding_mean']].max(axis=1),
-               color=LIGHT_GREY, lw=3, zorder=1)
-    ax1.scatter(t['dsa_mean'], y, color=COLORS[0], s=40, zorder=3, label='DSA criteria only', edgecolor='white', lw=0.8)
-    ax1.scatter(t['binding_mean'], y, color=COLORS[1], s=40, zorder=3, marker='D', label='With EDP and safeguards',
-                edgecolor='white', lw=0.8)
-    ax1.set_yticks(y, t['check'], fontsize=9)
-    ax1.set_xlabel('Mean absolute change of the SPB target (pp.)')
-    ax1.grid(axis='y', visible=False)
-    ax1.legend(loc='lower right', frameon=False, fontsize=9)
-    ax1.set_title('Effect on the SPB target', loc='left', fontsize=12)
-    ax2.barh(y, t['share_above_dsa'], color=COLORS[6], height=0.62, zorder=2)
-    ax2.axvline(t['baseline_share_above_dsa'].iloc[0], color=INK, lw=1.2, ls='--', zorder=3, label='Baseline')
-    ax2.set_xlim(0, 1)
-    ax2.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f'{v:.0%}'))
-    ax2.set_xlabel('Share of runs')
-    ax2.grid(axis='y', visible=False)
-    ax2.legend(loc='lower right', frameon=False, fontsize=9)
-    ax2.set_title('EDP or safeguards raise the target', loc='left', fontsize=12)
-    for ax in (ax1, ax2):
-        _despine(ax)
-    plt.tight_layout()
-    return fig
-
-
-def plot_debt_paths(df, country, adjustment_period=4, target='dsa',
-                    highlight=('baseline', 'bundle:accommodative', 'bundle:strict'), exclude_groups=('Global',)):
-    """
-    Debt paths for one country (adjustment to the target of each run, baseline assumptions of each run): all checks in
-    grey, baseline and bundles highlighted.
+    Debt by country (one panel each) under a linear adjustment to the target of each run: baseline and the accommodative
+    and restrictive combinations of the global draws (lowest and highest draw of the target), with the range across the
+    individual checks of model assumptions (grey; data revisions excluded).
     """
     col = TARGETS[target]['debt_path']
-    d = df[(df['country'] == country) & (df['adjustment_period'] == adjustment_period) & ~df['group'].isin(exclude_groups)]
-    d = d[d[col].notna()]
-    fig, ax = plt.subplots(figsize=(9, 5))
-    for _, r in d[~d['id'].isin(highlight)].iterrows():
-        p = pd.Series(r[col])
-        ax.plot(p.index, p.values, color=GREY, lw=0.8, alpha=0.35, zorder=1)
-    styles = {'baseline': (BASELINE, 'Model baseline'), 'bundle:accommodative': (ACCOMMODATIVE, 'Accommodative bundle'),
-              'bundle:strict': (STRICT, 'Strict bundle')}
-    for hid in highlight:
-        r = d[d['id'] == hid]
-        if len(r):
-            p = pd.Series(r[col].iloc[0])
-            color, label = styles.get(hid, (COLORS[4], hid))
-            ax.plot(p.index, p.values, color=color, lw=2.4, zorder=3, label=label)
-            ax.annotate(f'{p.iloc[-1]:.0f}', (p.index[-1], p.iloc[-1]), xytext=(4, 0), textcoords='offset points',
-                        va='center', fontsize=9, color=MUTED)
-    base = d[d['id'] == 'baseline']
-    if len(base):
-        end = base['adjustment_end_year'].iloc[0]
-        ax.axvspan(end - adjustment_period + 0.5, end + 0.5, color=LIGHT_GREY, alpha=0.5, zorder=0,
-                   label='Adjustment period (baseline)')
-    ax.plot([], [], color=GREY, lw=0.8, label='One-at-a-time checks')
-    ax.set_ylabel('Debt (% of GDP)')
-    ax.set_title(f"{country}: debt, adjustment to the {TARGETS[target]['label']}, {adjustment_period}-year adjustment",
-                 loc='left')
-    ax.legend(loc='best', frameon=False, fontsize=9)
-    ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
-    _despine(ax)
-    plt.tight_layout()
-    return fig
-
-
-def plot_variance_shares(vd, adjustment_period=4, categories=GLOBAL_CATEGORIES):
-    """
-    Stacked bars: share of the variance of the target by category of assumptions (global sensitivity analysis),
-    countries ordered by the standard deviation of the target (shown on the right).
-    """
-    d = vd[vd['adjustment_period'] == adjustment_period].sort_values('std')
-    target = d['target'].iloc[0] if 'target' in d and len(d) else 'dsa'
-    cols = list(categories) + ['Non-linear and interactions']
-    colors = dict(zip(cols, COLORS[:len(categories)] + [LIGHT_GREY]))
-    fig, ax = plt.subplots(figsize=(10, 0.32 * len(d) + 2))
-    y = np.arange(len(d))
-    left = np.zeros(len(d))
-    total = d[cols].sum(axis=1).to_numpy()
-    for c in cols:
-        w = d[c].to_numpy() / total
-        ax.barh(y, w, left=left, color=colors[c], height=0.72, label=c, edgecolor='white', linewidth=1)
-        left += w
-    for yi, s in zip(y, d['std']):
-        ax.text(1.01, yi, f'{s:.2f}', va='center', fontsize=8, color=MUTED)
-    ax.text(1.01, len(d) - 0.2, 'SD (pp.)', fontsize=8, color=MUTED, va='bottom')
-    ax.set_yticks(y, d['country'], fontsize=9)
-    ax.set_xlim(0, 1)
-    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f'{v:.0%}'))
-    ax.grid(axis='y', visible=False)
-    ax.set_title(f"Variance of the {TARGETS[target]['label']} by assumption, {adjustment_period}-year adjustment",
-                 loc='left')
-    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.06 - 0.3 / max(len(d), 1)), ncol=4, frameon=False, fontsize=9)
-    _despine(ax)
-    plt.tight_layout()
+    d = df[(df['adjustment_period'] == adjustment_period) & df[col].notna()]
+    countries = countries or list(dict.fromkeys(d['country']))
+    lines = [('baseline', 'Baseline', BASELINE),
+             ('draws:accommodative', 'Accommodative (lowest draw)', ACCOMMODATIVE),
+             ('draws:restrictive', 'Restrictive (highest draw)', RESTRICTIVE)]
+    nrows = int(np.ceil(len(countries) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3.2 * ncols, 2.3 * nrows + 0.8), squeeze=False)
+    for ax, c in zip(axes.ravel(), countries):
+        dc = d[d['country'] == c]
+        T = dc.loc[dc['id'] == 'baseline', 'T'].iloc[0]
+        oat = dc[~dc['group'].isin(exclude_groups) & ~dc['id'].isin(exclude_ids) & (dc['T'] == T)]
+        paths = pd.DataFrame({i: pd.Series(p) for i, p in zip(oat['id'], oat[col])}).sort_index()
+        ax.fill_between(paths.index, paths.min(axis=1), paths.max(axis=1), color=LIGHT_GREY, lw=0)
+        for i, label, color in lines:
+            r = dc[dc['id'] == i]
+            if len(r):
+                p = pd.Series(r[col].iloc[0]).sort_index()
+                ax.plot(p.index, p.values, color=color, lw=1.5, label=label)
+        ax.set_title(c, fontsize=10)
+        ax.tick_params(labelsize=8)
+        ax.xaxis.set_major_locator(plt.MaxNLocator(nbins=4, integer=True))
+    for ax in axes.ravel()[len(countries):]:
+        ax.set_visible(False)
+    handles = [Patch(color=LIGHT_GREY, label='Range of individual checks')]
+    handles += [Line2D([], [], color=color, lw=1.5, label=label) for _, label, color in lines]
+    fig.legend(handles=handles, loc='lower center', ncol=4, frameon=False)
+    fig.suptitle(f"Debt (% of GDP) under an adjustment to the SPB target ({TARGET_LABELS[target]}), "
+                 f"{adjustment_period}-year adjustment", fontweight='bold')
+    fig.tight_layout(rect=(0, 0.5 / fig.get_figheight(), 1, 1))
     return fig
