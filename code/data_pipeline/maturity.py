@@ -14,6 +14,8 @@
 #                             missing or implausible ECB data)
 #   repayment_profiles        BOND_REPAYMENT: repayments of the long-term debt outstanding at the end
 #                             of the base year, by year (used with bond_data=True)
+#   add_repayment_profiles    BOND_REPAYMENT for the Commission-mode workbooks, scaled to their debt
+#                             (levels there are indexed, not in bn)
 #
 # Repayment profile. The base year is the latest year with data before the reference year T (end of
 # T-1 in API builds). Short-term debt (original maturity <= 1 year, repaid each year in the model) is
@@ -223,3 +225,33 @@ def repayment_profiles(data, countries, reference_year, esm=None, end_year=2070,
             note += '; 5-10/10-30/> 30 year split estimated with the average shares of countries with full data'
         info[c] = {'base_year': base, 'estimated': estimated, 'note': note}
     return pd.DataFrame(profiles), info
+
+
+def add_repayment_profiles(data, countries, end_year=2070):
+    """
+    Add Eurostat repayment profiles (BOND_REPAYMENT) to Commission-mode country data (commission.build_country_commission),
+    in place. These workbooks index nominal GDP (debt is not in bn) and have no separate ESM/EFSF series, so the profile
+    covers all long-term debt and is scaled to the long-term debt of the workbook in T (DEBT_TOTAL x (1 - DEBT_ST_SHARE));
+    the model scales profiles to that debt in any case (DsaModel._clean_bond_repayment). Countries without Eurostat data
+    get no profile. Needs internet access; on failure the workbook is built without profiles.
+    """
+    import warnings
+    try:
+        maturity = fetch_maturity_data(countries)
+    except Exception as err:
+        warnings.warn(f'Eurostat maturity data not available ({err}); workbook built without BOND_REPAYMENT')
+        return
+    T = {c: data[c]['reference_year'] for c in countries}
+    profiles, info = repayment_profiles(maturity, countries, T, esm=None, end_year=end_year)
+    for c in profiles:
+        d = data[c]
+        series, T_c = d['series'], T[c]
+        stock = series.loc[T_c, 'DEBT_TOTAL'] * (1 - d['params']['DEBT_ST_SHARE'])
+        profile = profiles[c].dropna()
+        profile = profile / profile.sum() * stock
+        years = [y for y in profile.index if y in series.index]
+        series.loc[years, 'BOND_REPAYMENT'] = profile[years].to_numpy()
+        d['series_provenance'].loc[years, 'BOND_REPAYMENT'] = 'derived' if info[c]['estimated'] else 'api'
+        d['series_sources']['BOND_REPAYMENT'] = (
+            info[c]['note'].replace('net of short-term debt and ESM/EFSF loans', 'net of short-term debt')
+            .replace('scaled to long-term debt in T by the model', 'scaled to long-term debt of this workbook in T'))

@@ -49,9 +49,13 @@ def build_inputs(mode='api', countries=EU27, vintage=None, prior_guidance='lates
     if mode == 'commission':
         vintage = vintage or f'commission_{prior_guidance}'
         data = {c: commission.build_country_commission(sheets[c]) for c in countries}
+        # Optional input not in the sheets: Eurostat repayment profile of long-term debt (used with bond_data=True)
+        from .maturity import add_repayment_profiles
+        add_repayment_profiles(data, countries)
         description = (f'All inputs taken from the European Commission prior guidance calculation sheets '
-                       f'({prior_guidance} vintage). Use to replicate the Commission DSA; start the model in each '
-                       f"country's reference year T.")
+                       f'({prior_guidance} vintage), except the optional repayment profile of long-term debt '
+                       f'(BOND_REPAYMENT, Eurostat, used with bond_data=True). Use to replicate the Commission DSA; '
+                       f"start the model in each country's reference year T.")
     elif mode == 'api':
         from . import api_build
         vintage = vintage or datetime.date.today().strftime('%Y_%m')
