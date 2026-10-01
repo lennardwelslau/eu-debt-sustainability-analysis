@@ -11,8 +11,9 @@
 #   L+1 to T+5    Output Gaps Working Group projections if supplied (ogwg_file); otherwise the
 #                 output gap closes linearly by T+5 and potential growth is interpolated
 #   T+10 onwards  Ageing Report potential growth; ageing costs from T
-#   Markets       ECB benchmark rates in T and T+1; T+10/T+30 anchors from the Commission prior
-#                 guidance sheet (Bloomberg forwards and inflation swaps)
+#   Markets       ECB benchmark rates in T and T+1; T+10 anchors from the most recent Bloomberg file in
+#                 data/RawData/market (forward rates, euro area 5y5y inflation swap) if supplied, otherwise
+#                 from the Commission prior guidance sheet; T+30 anchors from the Commission sheet
 #   Debt          ECB debt structure; Eurostat (gov_10dd_rmd, gov_10dd_ggd) where ECB data are missing or
 #                 implausible, then the Commission prior guidance sheet, then the EU median; maturing shares
 #                 exclude ESM/EFSF loans (own schedule in the model); average residual maturity and repayment
@@ -38,6 +39,13 @@ from .commission import commission_parameters
 
 END_YEAR = 2070
 
+# Inflation anchors (DSM 2024, Annex A3): at T+10 the euro area 5y5y inflation swap, plus half of the inflation spread to
+# the euro area for non-euro area countries targeting inflation other than 2% (footnote 6; the spread observed in T+2,
+# here in the last forecast year, which is T+2 for autumn and T+1 for spring forecasts); at T+30 the
+# national inflation target (footnote 7, sources.INFLATION_TARGETS). T+30 interest rates: long-term rate = inflation
+# target + 2, short-term rate = half of the long-term rate.
+INFLATION_SPREAD_COUNTRIES = [c for c, target in S.INFLATION_TARGETS.items() if target != 2.0]
+
 
 def _ameco_vintage():
     try:
@@ -47,7 +55,7 @@ def _ameco_vintage():
         return 'unknown'
 
 
-def build_countries(countries, sheets, reference_year=None, ogwg_file=None, verbose=True):
+def build_countries(countries, sheets, reference_year=None, ogwg_file=None, market_file='latest', verbose=True):
     """
     Build input data for all countries from public APIs and reference files.
 
@@ -57,6 +65,8 @@ def build_countries(countries, sheets, reference_year=None, ogwg_file=None, verb
         reference_year (int): Reference year T. Defaults to the year after the last outturn year in Eurostat's EDP
             notification data (the vintage year of the forecast, as in the Commission prior guidance).
         ogwg_file (str/Path): Optional Output Gaps Working Group file with real and potential GDP to T+5.
+        market_file (str/Path): Bloomberg market expectations for the T+10 anchors (sources.read_market_expectations);
+            'latest' (default) uses the most recent file in data/RawData/market, None the Commission sheet values.
 
     Returns:
         (data dict for write_workbook, description string)
@@ -96,6 +106,8 @@ def build_countries(countries, sheets, reference_year=None, ogwg_file=None, verb
     awg_growth = S.read_awg_table(ref['awg'], 'Table II.1.14')
     dsm = S.read_dsm_fiche_rows(ref['dsm'], countries, {'SF': r'^\(3\) Stock-flow', 'TPI': r'^\(1\.1\.3\) Others'})
     ogwg = S.read_ogwg(ogwg_file, countries) if ogwg_file else None
+    market_file = S.latest_market_file() if market_file == 'latest' else market_file
+    market, market_vintage = S.read_market_expectations(market_file, countries) if market_file else (None, None)
 
     ea_deflator = ameco[('EA20', 'GDP_DEFLATOR')].pct_change() * 100
     usd_per_eur = ameco[('USA', 'XNE')]
@@ -105,7 +117,8 @@ def build_countries(countries, sheets, reference_year=None, ogwg_file=None, verb
         data[c] = _build_country(c, T, L, ameco[c], ea_deflator, usd_per_eur, rates, debt.loc[c], esm[c],
                                  awg_ageing[c], awg_growth[c], dsm['SF'].get(c), dsm['TPI'].get(c),
                                  ogwg, sheets[c], ameco_vintage, debt_params.loc[c], debt_sources[c], debt_median,
-                                 profiles.get(c), profile_info.get(c))
+                                 profiles.get(c), profile_info.get(c),
+                                 market.loc[c] if market is not None else None, market_vintage)
         _check(c, T, L, data[c])
 
     description = (f'Up-to-date public data. AMECO via DBnomics (indexed {ameco_vintage}), ECB Data Portal '
@@ -113,7 +126,9 @@ def build_countries(countries, sheets, reference_year=None, ogwg_file=None, verb
                    f'ESM repayment database, 2024 Ageing Report, '
                    f'DSM 2025 country fiches, '
                    f"{'OGWG file ' + str(ogwg_file) if ogwg_file else 'no OGWG file (output gap closes by T+5)'}. "
-                   f'Market anchors (T+10, T+30), EDP status and semi-elasticities from the Commission prior '
+                   + (f'Market anchors at T+10 from Bloomberg ({market_vintage}); market anchors at T+30, ' if market is not None
+                      else f'Market anchors (T+10, T+30), ')
+                   + f'EDP status and semi-elasticities from the Commission prior '
                    f'guidance sheets; fiscal multiplier 0.75 with persistent effect on the output gap.')
     return data, description
 
@@ -159,7 +174,7 @@ def _debt_structure(ecb, eurostat, countries):
 
 def _build_country(c, T, L, am, ea_deflator, usd_per_eur, rates, debt, esm, awg_ageing, awg_growth,
                    dsm_sf, dsm_tpi, ogwg, sheet, ameco_vintage, debt_params, debt_sources, debt_median,
-                   profile=None, profile_info=None):
+                   profile=None, profile_info=None, market=None, market_vintage=None):
     years = range(T - 3, END_YEAR + 1)
     out = pd.DataFrame(index=pd.Index(years, name='YEAR'), columns=list(SERIES), dtype=float)
     prov = pd.DataFrame(None, index=out.index, columns=out.columns, dtype=object)
@@ -275,6 +290,31 @@ def _build_country(c, T, L, am, ea_deflator, usd_per_eur, rates, debt, esm, awg_
     note_T10 = f' (T+10 refers to {sheet.T + 10} in the guidance, applied at T+10 = {T + 10} here)'
     for p in ['INTEREST_RATE_ST_T10', 'INTEREST_RATE_LT_T10', 'INFLATION_T10']:
         psrc[p] = (psrc[p][0], psrc[p][1] + note_T10)
+
+    # T+10 anchors from a more recent Bloomberg file where supplied (replacing the Commission sheet values)
+    if market is not None and market[['FWD_RATE_3M10Y', 'FWD_RATE_10Y10Y', 'FWD_INFL_5Y5Y']].notna().all():
+        bbg = f'Bloomberg ({market_vintage}, data/RawData/market)'
+        params['INTEREST_RATE_ST_T10'] = market['FWD_RATE_3M10Y']
+        psrc['INTEREST_RATE_ST_T10'] = ('reference', f'{bbg}: 3M10Y forward rate')
+        params['INTEREST_RATE_LT_T10'] = market['FWD_RATE_10Y10Y']
+        psrc['INTEREST_RATE_LT_T10'] = ('reference', f'{bbg}: 10Y10Y forward rate')
+        params['INFLATION_T10'] = market['FWD_INFL_5Y5Y']
+        psrc['INFLATION_T10'] = ('reference', f'{bbg}: euro area 5y5y inflation swap')
+        if c in INFLATION_SPREAD_COUNTRIES:
+            params['INFLATION_T10'] += (out.loc[L, 'GDP_DEFLATOR_PCH'] - out.loc[L, 'EA_GDP_DEFLATOR_PCH']) / 2
+            psrc['INFLATION_T10'] = ('reference', f'{bbg}: euro area 5y5y inflation swap plus half of the inflation spread '
+                                                  f'to the euro area in {L} (last forecast year)')
+
+    # T+30 anchors from the national inflation target (the Commission sheets use the same values)
+    target = S.inflation_target(c)
+    t30 = {'INFLATION_T30': target, 'INTEREST_RATE_LT_T30': target + 2, 'INTEREST_RATE_ST_T30': (target + 2) / 2}
+    for p, v in t30.items():
+        if pd.notna(params.get(p)) and abs(params[p] - v) > 1e-6:
+            warnings.warn(f'{c}: {p} = {v} (inflation target) differs from the Commission sheet ({params[p]})')
+        params[p] = v
+        psrc[p] = ('assumption', f'DSM 2024 methodology: inflation target {target:g}% (national target of non-euro area '
+                                 f'inflation targeters, 2% otherwise); long-term rate = target + 2; short-term rate = half '
+                                 f'of the long-term rate')
     euro_member = S.EURO_ADOPTION.get(c, 9999) <= T + 1
     for p in DEBT_SHARES:
         if pd.notna(debt_params[p]):

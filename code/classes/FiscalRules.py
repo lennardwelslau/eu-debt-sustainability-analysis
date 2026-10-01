@@ -453,12 +453,16 @@ class FiscalRules:
     #   COMMISSION RULES (prior guidance calculation sheets)                                  #
     # ========================================================================================= #
 
-    def _find_spb_binding_rules(self, stochastic, print_results, save_df, bounds=(-3, 3), tol=1e-4):
+    def _find_spb_binding_rules(self, stochastic, print_results, save_df, bounds=None, tol=1e-4):
         """
         Binding SPB target for a constant annual adjustment: the DSA-based adjustment is the smallest constant annual
         step meeting the DSA criteria; the binding adjustment is the smallest step above it for which the path,
-        including EDP and deficit resilience steps, meets the debt safeguard. Rules as set in self.rules.
+        including EDP and deficit resilience steps, meets the debt safeguard. Rules as set in self.rules. The annual
+        adjustment is searched within bounds (pp. per year), by default -3 to the model attribute adjustment_bound
+        (3 if not set).
         """
+        if bounds is None:
+            bounds = (-3, getattr(self, 'adjustment_bound', 3))
         rules = self.rules
         n, s, e = self.adjustment_period, self.adjustment_start, self.adjustment_end
         if hasattr(self, 'predefined_spb_steps'):
