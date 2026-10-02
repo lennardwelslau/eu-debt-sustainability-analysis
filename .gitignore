@@ -13,3 +13,6 @@ data/RawData/reference/
 
 # Run caches of the sensitivity exercise (results are saved in sensitivity_results.xlsx)
 output/sensitivity/*.pkl
+
+# Working paper drafts
+paper/
