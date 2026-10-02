@@ -8,7 +8,11 @@
 #
 # 1. Specifications: each check is one spec, a dict with model keyword arguments, model attributes,
 #    input overrides (relative to the baseline data), find_spb_binding keyword arguments and optional
-#    setup functions applied after initialisation (build_oat_specs, build_global_specs).
+#    setup functions applied after initialisation (build_oat_specs, build_global_specs). Settings are grouped by
+#    kind (KINDS): assumptions about the economy, the measurement of uncertainty, the calibration of the rules (risk
+#    tolerance) and data and definitions. Two global analyses draw the assumptions about the economy alone and
+#    together with the measurement settings (JOINT_RUNS); the calibration settings are not drawn but shown one at a
+#    time and in a lenient and a strict scenario (CALIBRATION_SCENARIOS).
 # 2. Runner: run_specs runs specs for countries and adjustment periods in parallel (ProcessPoolExecutor)
 #    and caches results by task, so reruns only compute missing tasks.
 # 3. Results: one tidy DataFrame with one row per spec, country and adjustment period, deviations from the
@@ -229,22 +233,60 @@ DISCRETE_ASSUMPTIONS = {
     'winsorize_off': ('Winsorised shocks off', [(0, {}), (1, {'model_kwargs': {'winsorize_sample': False}})]),
 }
 
-# Assumptions varied in the global sensitivity analysis
-GLOBAL_ASSUMPTIONS = ['rate_st_T10', 'rate_lt_T10', 'rate_st_T30', 'rate_lt_T30', 'inflation_T10',
-                      'inflation_T30', 'potential_growth', 'ageing_scale', 'elasticity_scale', 'fiscal_multiplier',
-                      'adverse_r_g_shock', 'financial_stress_shock', 'lower_spb_shock'] + list(DISCRETE_ASSUMPTIONS)
+# Kinds of settings: group labels of the individual checks
+KINDS = {
+    'Economy': 'Assumptions about the economy',
+    'Measurement': 'Measurement of uncertainty',
+    'Calibration': 'Rule calibration',
+    'Data': 'Data and definitions',
+}
+ECONOMY, MEASUREMENT, CALIBRATION, DATA = 'Economy', 'Measurement', 'Calibration', 'Data'
 
-# Categories of the global variance decomposition
-GLOBAL_CATEGORIES = {
+# A. Assumptions about the economy: unknown future values of the debt drivers and of the response of output to
+# fiscal policy, and the repayment of debt (which also shapes refinancing and new issuance)
+ECONOMY_ASSUMPTIONS = ['rate_st_T10', 'rate_lt_T10', 'rate_st_T30', 'rate_lt_T30', 'inflation_T10', 'inflation_T30',
+                       'potential_growth', 'ageing_scale', 'elasticity_scale', 'fiscal_multiplier',
+                       'multiplier_persistence', 'repayment_profile']
+# B. Measurement of uncertainty: how the stochastic analysis estimates the risk around the debt path
+MEASUREMENT_ASSUMPTIONS = ['stochastic_start', 'stochastic_period', 'shock_sample_start', 'shock_frequency_annual',
+                           'var_bootstrap', 'winsorize_off']
+# C. Rule calibration: how much risk the rules accept (probability target, size of the stress tests) and how much of
+# future ageing costs the adjustment must cover. Not drawn: individual checks and CALIBRATION_SCENARIOS.
+CALIBRATION_SETTINGS = ['prob_target', 'adverse_r_g_shock', 'financial_stress_shock', 'lower_spb_shock',
+                        'ageing_cost_period']
+# D. Data and definitions (individual checks only): the data update and stock-flow adjustments after T, which after
+# the forecast years are non-zero only for Finland, Luxembourg (pension fund surpluses) and Greece (deferred interest
+# on official loans), a question of gross versus net debt.
+
+# Global analyses: assumptions drawn in each, the others stay at the baseline
+JOINT_RUNS = {
+    'economy': ECONOMY_ASSUMPTIONS,
+    'economy_measurement': ECONOMY_ASSUMPTIONS + MEASUREMENT_ASSUMPTIONS,
+}
+GLOBAL_ASSUMPTIONS = JOINT_RUNS['economy_measurement']
+
+# Categories of the variance decomposition
+ECONOMY_CATEGORIES = {
     'Interest rates': ['rate_st_T10', 'rate_lt_T10', 'rate_st_T30', 'rate_lt_T30'],
     'Inflation': ['inflation_T10', 'inflation_T30'],
-    'Growth, ageing and stock-flow': ['potential_growth', 'ageing_scale', 'ageing_cost_period', 'stock_flow_zero'],
+    'Growth and ageing': ['potential_growth', 'ageing_scale'],
     'Debt repayment': ['repayment_profile'],
     'Multiplier and elasticity': ['fiscal_multiplier', 'multiplier_persistence', 'elasticity_scale'],
-    'Stress-test calibration': ['adverse_r_g_shock', 'financial_stress_shock', 'lower_spb_shock'],
-    'Stochastic analysis': ['prob_target', 'stochastic_period', 'stochastic_start', 'shock_sample_start',
-                            'shock_frequency_annual', 'var_bootstrap', 'winsorize_off'],
 }
+GLOBAL_CATEGORIES = {**ECONOMY_CATEGORIES, 'Measurement of uncertainty': MEASUREMENT_ASSUMPTIONS}
+
+# Calibration scenarios: all calibration settings at the lenient or at the strict end of their range (the ageing cost
+# period cannot be stricter than the baseline of 10 years, which covers the horizon of the DSA criteria)
+CALIBRATION_SCENARIOS = {
+    'lenient': {'attributes': {'prob_target': 0.6, 'adverse_r_g_shock': 0.25, 'financial_stress_shock': 0.5,
+                               'lower_spb_shock': 0.25},
+                'model_kwargs': {'ageing_cost_period': 5}},
+    'strict': {'attributes': {'prob_target': 0.8, 'adverse_r_g_shock': 0.75, 'financial_stress_shock': 1.5,
+                              'lower_spb_shock': 0.75}},
+}
+
+# Kind of each continuous assumption (group label of its individual checks)
+KIND_OF = {name: (CALIBRATION if name in CALIBRATION_SETTINGS else ECONOMY) for name in ASSUMPTIONS}
 
 
 def assumption_label(name):
@@ -273,74 +315,75 @@ def assumption_spec(name, value, real_rates=False, **kwargs):
     """
     Spec for one value of a continuous assumption (see ASSUMPTIONS).
     """
-    group, check, _, base, _ = ASSUMPTIONS[name]
+    prefix, check, _, base, _ = ASSUMPTIONS[name]  # the id prefix (e.g. 'macro') keeps ids stable across versions
     variant = f'x{value:g}' if name.endswith('scale') else (f'{value:g}' if not isinstance(base, (int, float)) or base != 0 else _fmt(value))
-    return make_spec(f'{group.lower().split()[0]}:{name}:{variant}', group, check, variant, value=value, base_value=base, knob=name,
-                     **{**assumption_fields(name, value, real_rates), **kwargs})
+    return make_spec(f'{prefix.lower().split()[0]}:{name}:{variant}', KIND_OF[name], check, variant, value=value,
+                     base_value=base, knob=name, **{**assumption_fields(name, value, real_rates), **kwargs})
 
 
 def build_oat_specs(latest_file=None, real_rates=False):
     """
-    Individual checks (baseline first). latest_file: workbook for the data update check (default latest_input_file()).
-    real_rates: inflation checks keep real interest rates unchanged (see assumption_fields).
+    Individual checks (baseline first), grouped by kind (KINDS): assumptions about the economy, measurement of
+    uncertainty, rule calibration (with the lenient and strict CALIBRATION_SCENARIOS) and data and definitions, then
+    the noise band. latest_file: workbook for the data update check (default latest_input_file()). real_rates:
+    inflation checks keep real interest rates unchanged (see assumption_fields). Ids do not depend on the grouping, so
+    that cached runs remain valid.
     """
     specs = [baseline_spec()]
     spec = make_spec
 
-    # 1. Data
-    latest_file = latest_file or latest_input_file()
-    # Starting values (SPB, balances, debt in T) are data, not assumptions: they are not varied. The data vintage
-    # update check shows how the latest data (later reference year, forecasts replaced by outturns) change the targets.
-    specs.append(spec('data:latest', 'Data', 'Data update',
-                      f"latest vintage ({os.path.splitext(os.path.basename(latest_file))[0].replace('dsa_inputs_', '')})",
-                      input_file=latest_file))
+    # A. Assumptions about the economy
+    for name in ['rate_st_T10', 'rate_lt_T10', 'rate_st_T30', 'rate_lt_T30', 'inflation_T10', 'inflation_T30',
+                 'potential_growth', 'ageing_scale', 'elasticity_scale', 'fiscal_multiplier']:
+        specs += [assumption_spec(name, v, real_rates=real_rates) for v in ASSUMPTIONS[name][4]]
+    specs += [spec(f'multiplier:persistence:{p}', ECONOMY, 'Multiplier persistence', f'{p} years', value=p,
+                   base_value=3, model_kwargs={'fiscal_multiplier_persistence': p}) for p in [1, 2, 4, 5]]
     # Repayment profile of long-term debt (BOND_REPAYMENT in the input workbook, from Eurostat debt by residual maturity)
     # instead of the share of long-term debt maturing each year. Countries without Eurostat data fail these runs.
-    specs.append(spec('data:repayment_profile', 'Data', 'Repayment profile (Eurostat)', 'residual maturity buckets',
+    specs.append(spec('data:repayment_profile', ECONOMY, 'Repayment profile (Eurostat)', 'residual maturity buckets',
                       model_kwargs={'bond_data': True}))
 
-    # 2. Macro assumptions
-    for name in ['rate_st_T10', 'rate_lt_T10', 'rate_st_T30', 'rate_lt_T30', 'inflation_T10', 'inflation_T30',
-                 'potential_growth', 'ageing_scale']:
-        specs += [assumption_spec(name, v, real_rates=real_rates) for v in ASSUMPTIONS[name][4]]
-    specs.append(spec('macro:stock_flow_zero', 'Macro', 'Stock-flow adjustment', 'zero after T',
-                      overrides=[{'code': 'STOCK_FLOW_RATIO', 'years': 'after', 'value': 0}]))
-    specs += [spec(f'macro:ageing_cost_period:{p}', 'Macro', 'Ageing cost period', f'{p} years', value=p, base_value=10,
-                   model_kwargs={'ageing_cost_period': p}) for p in [5]]
-    specs += [assumption_spec('elasticity_scale', v) for v in ASSUMPTIONS['elasticity_scale'][4]]
+    # B. Measurement of uncertainty
+    specs.append(spec('stochastic:start:adjustment', MEASUREMENT, 'Stochastic start', 'first adjustment year',
+                      setup=[stochastic_start_at_adjustment]))
+    specs.append(spec('stochastic:period:10', MEASUREMENT, 'Stochastic period', '10 years', value=10, base_value=5,
+                      model_kwargs={'stochastic_period': 10}))
+    specs += [spec(f'stochastic:sample_start:{y}', MEASUREMENT, 'Shock sample start', str(y), value=y, base_value=2000,
+                   model_kwargs={'shock_sample_start': y}) for y in [1990, 2010]]
+    specs.append(spec('stochastic:frequency:annual', MEASUREMENT, 'Shock frequency', 'annual',
+                      model_kwargs={'shock_frequency': 'annual'}))
+    specs.append(spec('stochastic:estimation:var_bootstrap', MEASUREMENT, 'Shock estimation', 'var_bootstrap',
+                      model_kwargs={'estimation': 'var_bootstrap'}))
+    specs.append(spec('stochastic:winsorize:off', MEASUREMENT, 'Winsorised shocks', 'off',
+                      model_kwargs={'winsorize_sample': False}))
 
-    # 3. Fiscal multiplier
-    specs += [assumption_spec('fiscal_multiplier', v) for v in ASSUMPTIONS['fiscal_multiplier'][4]]
-    specs += [spec(f'multiplier:persistence:{p}', 'Multiplier', 'Multiplier persistence', f'{p} years', value=p,
-                   base_value=3, model_kwargs={'fiscal_multiplier_persistence': p}) for p in [1, 2, 4, 5]]
-
-    # 4. Stress-test calibration
+    # C. Rule calibration
+    specs += [spec(f'stochastic:prob_target:{p}', CALIBRATION, 'Probability target', f'{p:g}', value=p, base_value=0.7,
+                   attributes={'prob_target': p}) for p in [0.6, 0.8]]
     for name in ['adverse_r_g_shock', 'financial_stress_shock', 'lower_spb_shock']:
         specs += [assumption_spec(name, v) for v in ASSUMPTIONS[name][4]]
+    specs += [spec(f'macro:ageing_cost_period:{p}', CALIBRATION, 'Ageing cost period', f'{p} years', value=p,
+                   base_value=10, model_kwargs={'ageing_cost_period': p}) for p in [5]]
+    specs += [spec(f'calibration:{k}', CALIBRATION, 'Calibration scenario', k, **v) for k, v in CALIBRATION_SCENARIOS.items()]
 
-    # 5. Stochastic analysis
-    specs += [spec(f'stochastic:prob_target:{p}', 'Stochastic', 'Probability target', f'{p:g}', value=p, base_value=0.7,
-                   attributes={'prob_target': p}) for p in [0.6, 0.8]]
-    specs.append(spec('stochastic:period:10', 'Stochastic', 'Stochastic period', '10 years', value=10, base_value=5,
-                      model_kwargs={'stochastic_period': 10}))
-    specs.append(spec('stochastic:start:adjustment', 'Stochastic', 'Stochastic start', 'first adjustment year',
-                      setup=[stochastic_start_at_adjustment]))
-    specs += [spec(f'stochastic:sample_start:{y}', 'Stochastic', 'Shock sample start', str(y), value=y, base_value=2000,
-                   model_kwargs={'shock_sample_start': y}) for y in [1990, 2010]]
-    specs.append(spec('stochastic:frequency:annual', 'Stochastic', 'Shock frequency', 'annual',
-                      model_kwargs={'shock_frequency': 'annual'}))
-    specs.append(spec('stochastic:estimation:var_bootstrap', 'Stochastic', 'Shock estimation', 'var_bootstrap',
-                      model_kwargs={'estimation': 'var_bootstrap'}))
-    specs.append(spec('stochastic:winsorize:off', 'Stochastic', 'Winsorised shocks', 'off',
-                      model_kwargs={'winsorize_sample': False}))
+    # D. Data and definitions. Starting values (SPB, balances, debt in T) are data, not assumptions: they are not
+    # varied. The data update shows how the latest data (later reference year, forecasts replaced by outturns) change
+    # the targets.
+    latest_file = latest_file or latest_input_file()
+    specs.append(spec('data:latest', DATA, 'Data update',
+                      f"latest vintage ({os.path.splitext(os.path.basename(latest_file))[0].replace('dsa_inputs_', '')})",
+                      input_file=latest_file))
+    specs.append(spec('macro:stock_flow_zero', DATA, 'Stock-flow adjustment', 'zero after T',
+                      overrides=[{'code': 'STOCK_FLOW_RATIO', 'years': 'after', 'value': 0}]))
+
     specs += [spec(f'noise:seed:{s}', 'Noise', 'Random seed', str(s), seed=s) for s in range(1, 10)]
     return specs
 
 
 def build_global_specs(n_draws=200, seed=0, assumptions=GLOBAL_ASSUMPTIONS, real_rates=False):
     """
-    Global sensitivity analysis: n_draws Latin hypercube draws of all assumptions at once, with the stochastic
-    criterion. Continuous assumptions (ASSUMPTIONS) are drawn uniformly over the range of their values in the individual
+    Global sensitivity analysis: n_draws Latin hypercube draws of the given assumptions at once (JOINT_RUNS), with the
+    stochastic criterion; all other settings stay at the baseline. Continuous assumptions (ASSUMPTIONS) are drawn uniformly over the range of their values in the individual
     checks, discrete settings (DISCRETE_ASSUMPTIONS) with equal probability for each setting. The first
     spec is the baseline. The data update and the random seed are not drawn. With real_rates=True, the interest rate
     draws are real rates: nominal rates move with the inflation draws of the same anchor (see assumption_fields).
