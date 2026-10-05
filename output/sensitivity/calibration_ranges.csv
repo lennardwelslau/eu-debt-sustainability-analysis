@@ -1,0 +1,6 @@
+assumption,source,sample,n,bias,p25,p75,range_low,range_high
+rate_st_T10,Bundesbank: 1-year rate in ten years minus forward rate,"Germany, year ends 1986-2015",30,-4.125030908783306,-1.215803430669698,0.40302445003180853,-1.22,0.4
+rate_lt_T10,Bundesbank: 10-year rate in ten years minus 10Y10Y forward rate,"Germany, year ends 1986-2015",30,-2.984443858990174,-1.2432584906276587,0.8913127920356316,-1.24,0.89
+inflation_T10,"IMF WEO: CPI inflation, average error over five years","EU27, autumn vintages 2000-2018",513,0.13811605531447535,-0.7359166891904781,0.6440833108096325,-0.74,0.64
+potential_growth,"IMF WEO: real GDP growth, average error over five years","EU27, autumn vintages 2000-2018",513,-0.701382944009699,-0.841454590897299,1.0779545649417916,-0.84,1.08
+ageing_shift,"Ageing Report 2024: scenarios except pension policy, change in ageing costs 2024-2038","EU27, 8 scenarios",216,,-0.23683351447805334,0.1442075674273804,-0.24,0.14
