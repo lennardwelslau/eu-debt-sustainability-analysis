@@ -75,7 +75,7 @@ class StochasticDsaModel(FiscalRules, DsaModel):
                 stochastic_start_year=None, # start year of stochastic projection
                 stochastic_period=5, # number of years for stochastic projection
                 shock_frequency='quarterly', # frequency of shock data
-                winsorize_sample=True, # clip shocks to the 5th and 95th percentiles
+                winsorize_sample=True, # clip shocks to the 5th and 95th percentiles (or to q and 1 - q if a number q)
                 estimation='normal', # 'normal', 'var_cholesky' or 'var_bootstrap'
                 fiscal_multiplier=None, # None uses input file value
                 fiscal_multiplier_persistence=3, # years over which the multiplier effect on the output gap fades
@@ -148,11 +148,13 @@ class StochasticDsaModel(FiscalRules, DsaModel):
         self.num_variables = self.df_shocks.shape[1]
         assert self.num_variables == 6, 'Unexpected number of shock variables!'
 
-        # Adjust outliers by keeping only 95th to 5th percentile
+        # Adjust outliers by clipping shocks to the 5th and 95th percentiles (True) or to the q-th and (1 - q)-th
+        # percentiles (winsorize_sample = q, e.g. 0.01)
         if self.winsorize_sample:
+            q = 0.05 if self.winsorize_sample is True else float(self.winsorize_sample)
             self.df_shocks = self.df_shocks.clip(
-                lower=self.df_shocks.quantile(0.05, axis=0),
-                upper=self.df_shocks.quantile(0.95, axis=0),
+                lower=self.df_shocks.quantile(q, axis=0),
+                upper=self.df_shocks.quantile(1 - q, axis=0),
                 axis=1
                 )
 
@@ -571,6 +573,8 @@ class StochasticDsaModel(FiscalRules, DsaModel):
         elif not hasattr(self, 'prob_target'):
             self.prob_target = 0.7
 
+        if stochastic_criterion_start_year is None:  # a setting of the model (e.g. stochastic_start_at_adjustment)
+            stochastic_criterion_start_year = getattr(self, 'stochastic_criterion_start_year', None)
         if stochastic_criterion_start_year is None:
             self.stochastic_criterion_start = 0
         else:

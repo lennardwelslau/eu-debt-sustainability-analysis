@@ -196,15 +196,25 @@ def use_repayment_profile(model):
         model._clean_bond_repayment()
 
 
-def stochastic_start_at_adjustment(model):
+def stochastic_start_at_adjustment(model, criterion='end of adjustment'):
     """
-    Start the stochastic projection in the first adjustment year instead of the year after the adjustment period.
-    Primary balance shocks are zero during the adjustment period (see StochasticDsaModel._draw_shocks_normal).
+    Start the stochastic projection in the first adjustment year instead of the year after the adjustment period, so
+    that the shocks of the adjustment years add to the uncertainty. The criterion is unchanged: debt at the end of the
+    horizon (the same number of years after the adjustment period, so the projection is longer by the adjustment period)
+    must be below debt at the end of the adjustment period (stochastic_criterion_start_year). Primary balance shocks
+    are zero during the adjustment period (see StochasticDsaModel._draw_shocks_normal).
     """
+    model.stochastic_criterion_start_year = model.adjustment_start_year + model.adjustment_period
+    model.stochastic_period = model.stochastic_period + model.adjustment_period
     model.stochastic_start_year = model.adjustment_start_year
     model.stochastic_start = model.adjustment_start
     model.stochastic_end = model.stochastic_start + model.stochastic_period - 1
     model.draw_period = model.stochastic_period * (4 if model.shock_frequency == 'quarterly' else 1)
+
+
+# Setup of the early start (the keyword enters the cache key: runs of the earlier version, which compared debt with
+# debt in T, are not reused)
+EARLY_START = functools.partial(stochastic_start_at_adjustment, criterion='end of adjustment')
 
 
 # Calibration of the ranges ------------------------------------------------------------ #
@@ -366,6 +376,44 @@ def calibration_table(weo=None, forwards=None, ageing=None):
     return t
 
 
+# Empirical distribution of the errors, drawn in the joint draws (EMPIRICAL_DRAWS): demeaned errors as in
+# calibration_table, stored in ERRORS_FILE so that the draws (and run caches) do not depend on downloads or revisions.
+ERRORS_FILE = OUTPUT_DIR / 'calibration_errors.csv'
+
+
+def forecast_error_samples(path=ERRORS_FILE, refresh=False):
+    """
+    Demeaned errors used in the joint draws, by source: 'rates' (German forward-rate errors by year end, columns
+    rate_st and rate_lt, demeaned), 'weo' (WEO errors by country and vintage, columns growth and inflation, demeaned by
+    country) and 'ageing' (Ageing Report scenario deviations by country and scenario, column ageing). Errors of the same
+    source are kept together, so that their correlation is preserved. Computed once and stored in path.
+    """
+    if refresh or not os.path.exists(path):
+        f, w, a = forward_rate_errors(), weo_forecast_errors(), ageing_scenario_deviations()
+        rates = (f - f.mean()).reset_index().rename(columns={'year': 'key'}).assign(source='rates')
+        weo = (w - w.groupby(level=0).transform('mean')).reset_index()
+        weo = weo.assign(key=weo['country'] + ':' + weo['vintage'].astype(str), source='weo')
+        ageing = a.stack().rename('ageing').reset_index()
+        ageing = ageing.assign(key=ageing.iloc[:, 0] + ':' + ageing.iloc[:, 1].astype(str), source='ageing')
+        out = pd.concat([d[['source', 'key'] + [c for c in d if c in ('rate_st', 'rate_lt', 'growth', 'inflation', 'ageing')]]
+                         for d in (rates, weo, ageing)], ignore_index=True)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        out.round(6).to_csv(path, index=False)
+    d = pd.read_csv(path)
+    return {s: g.drop(columns='source').set_index('key').dropna(axis=1, how='all') for s, g in d.groupby('source')}
+
+
+# Joint draws from the empirical errors: draw name -> (source, sort column, {assumption: column}). The Latin hypercube
+# position of a draw selects one observation of the source, sorted by the sort column (a stratified draw from the
+# empirical distribution); all assumptions of the draw take the errors of that observation (same year for the two
+# rates, same country and vintage for growth and inflation). Sources are drawn independently.
+EMPIRICAL_DRAWS = {
+    'rates_T10': ('rates', 'rate_lt', {'rate_st_T10': 'rate_st', 'rate_lt_T10': 'rate_lt'}),
+    'weo_T10': ('weo', 'growth', {'potential_growth': 'growth', 'inflation_T10': 'inflation'}),
+    'ageing_shift': ('ageing', 'ageing', {'ageing_shift': 'ageing'}),
+}
+
+
 # Ranges of the model parameters, from the literature (values of the individual checks; the global analysis draws
 # uniformly between the lowest and highest value, persistence with equal probability for each value):
 # - fiscal multiplier (first-year output effect of a change in the SPB; baseline 0.75, Carnot and de Castro 2015):
@@ -383,6 +431,11 @@ LITERATURE_RANGES = {
     'multiplier_persistence': (2, 3, 4, 5),
     'elasticity_scale': (0.9, 1.1),
 }
+
+# Ranges of the joint draws where they differ from the range of the individual checks. The multiplier is drawn over
+# 0.5 to 1.0, where most estimates for normal times lie; 1.5 (crisis, synchronised consolidation, no monetary offset)
+# is an individual check only.
+JOINT_RANGES = {'fiscal_multiplier': (0.5, 1.0)}
 
 
 # Individual checks ------------------------------------------------------------------ #
@@ -439,11 +492,12 @@ DISCRETE_ASSUMPTIONS = {
     'prob_target': ('Probability target', [(p, {'attributes': {'prob_target': p}}) for p in [0.6, 0.7, 0.8]]),
     'stochastic_period': ('Stochastic period', [(p, {'model_kwargs': {'stochastic_period': p}}) for p in [5, 10]]),
     'stochastic_start': ('Stochastic start in first adjustment year', [
-        (0, {}), (1, {'setup': [stochastic_start_at_adjustment]})]),
+        (0, {}), (1, {'setup': [EARLY_START]})]),
     'shock_sample_start': ('Shock sample start', [(y, {'model_kwargs': {'shock_sample_start': y}}) for y in [1990, 2000, 2010]]),
     'shock_frequency_annual': ('Annual shock frequency', [(0, {}), (1, {'model_kwargs': {'shock_frequency': 'annual'}})]),
     'var_bootstrap': ('Shock estimation: VAR bootstrap', [(0, {}), (1, {'model_kwargs': {'estimation': 'var_bootstrap'}})]),
-    'winsorize_off': ('Winsorised shocks off', [(0, {}), (1, {'model_kwargs': {'winsorize_sample': False}})]),
+    'winsorize_1_99': ('Shocks winsorised at the 1st and 99th percentiles', [
+        (0, {}), (1, {'model_kwargs': {'winsorize_sample': 0.01}})]),
 }
 
 # Blocks of settings, by what settles them (group labels of the individual checks):
@@ -467,10 +521,10 @@ BLOCKS = {
 }
 FORECASTS, MODEL_PARAMETERS, ESTIMATION, RISK_STANDARD, DATA = BLOCKS  # PARAMETERS is the list of parameter codes (data_pipeline)
 
-FORECAST_ASSUMPTIONS = ['rates_T10', 'inflation_T10', 'potential_growth', 'ageing_shift']
+FORECAST_ASSUMPTIONS = ['rates_T10', 'weo_T10', 'ageing_shift']  # drawn from the empirical errors (EMPIRICAL_DRAWS)
 PARAMETER_ASSUMPTIONS = ['fiscal_multiplier', 'multiplier_persistence', 'elasticity_scale']
 ESTIMATION_SETTINGS = ['stochastic_start', 'stochastic_period', 'shock_sample_start', 'shock_frequency_annual',
-                       'var_bootstrap', 'winsorize_off']
+                       'var_bootstrap', 'winsorize_1_99']
 RISK_STANDARD_SETTINGS = ['prob_target', 'adverse_r_g_shock', 'financial_stress_shock', 'lower_spb_shock',
                           'ageing_cost_period']
 
@@ -483,8 +537,7 @@ GLOBAL_ASSUMPTIONS = JOINT_ASSUMPTIONS
 GLOBAL_CATEGORIES = {'Forecasts': FORECAST_ASSUMPTIONS, 'Model parameters': PARAMETER_ASSUMPTIONS}
 INPUT_CATEGORIES = {
     'Interest rates': ['rates_T10'],
-    'Inflation': ['inflation_T10'],
-    'Potential growth': ['potential_growth'],
+    'Potential growth and inflation': ['weo_T10'],
     'Ageing costs': ['ageing_shift'],
     'Fiscal multiplier': ['fiscal_multiplier', 'multiplier_persistence'],
     'Budget semi-elasticity': ['elasticity_scale'],
@@ -510,6 +563,7 @@ KIND_OF = {name: (RISK_STANDARD if name in RISK_STANDARD_SETTINGS
 # range of each member (ASSUMPTIONS), e.g. both rates at the same quantile of their ranges.
 COMPOSITE_ASSUMPTIONS = {
     'rates_T10': ('Short- and long-term rates T+10', ['rate_st_T10', 'rate_lt_T10']),
+    'weo_T10': ('Potential growth and inflation T+10', ['potential_growth', 'inflation_T10']),
 }
 
 
@@ -571,7 +625,7 @@ def build_oat_specs(latest_file=None, real_rates=False):
 
     # 3. Estimation of risk
     specs.append(spec('stochastic:start:adjustment', ESTIMATION, 'Stochastic start', 'first adjustment year',
-                      setup=[stochastic_start_at_adjustment]))
+                      setup=[EARLY_START]))
     specs.append(spec('stochastic:period:10', ESTIMATION, 'Stochastic period', '10 years', value=10, base_value=5,
                       model_kwargs={'stochastic_period': 10}))
     specs += [spec(f'stochastic:sample_start:{y}', ESTIMATION, 'Shock sample start', str(y), value=y, base_value=2000,
@@ -580,6 +634,8 @@ def build_oat_specs(latest_file=None, real_rates=False):
                       model_kwargs={'shock_frequency': 'annual'}))
     specs.append(spec('stochastic:estimation:var_bootstrap', ESTIMATION, 'Shock estimation', 'var_bootstrap',
                       model_kwargs={'estimation': 'var_bootstrap'}))
+    specs.append(spec('stochastic:winsorize:0.01', ESTIMATION, 'Winsorised shocks', '1st and 99th percentiles',
+                      model_kwargs={'winsorize_sample': 0.01}))  # baseline: 5th and 95th percentiles
     specs.append(spec('stochastic:winsorize:off', ESTIMATION, 'Winsorised shocks', 'off',
                       model_kwargs={'winsorize_sample': False}))
 
@@ -601,8 +657,8 @@ def build_oat_specs(latest_file=None, real_rates=False):
     specs.append(spec('data:latest', DATA, 'Data update',
                       f"latest vintage ({os.path.splitext(os.path.basename(latest_file))[0].replace('dsa_inputs_', '')})",
                       input_file=latest_file))
-    specs.append(spec('macro:stock_flow_zero', DATA, 'Stock-flow adjustment', 'zero after T',
-                      overrides=[{'code': 'STOCK_FLOW_RATIO', 'years': 'after', 'value': 0}]))
+    # The Commission's stock-flow adjustments are kept as given in all runs (country-specific inputs, not a modelling
+    # assumption); the former check setting them to zero after T is dropped.
     specs.append(spec('data:repayment_profile', DATA, 'Repayment profile (Eurostat)', 'residual maturity buckets',
                       model_kwargs={'bond_data': True}))
 
@@ -615,7 +671,7 @@ def build_oat_specs(latest_file=None, real_rates=False):
 # stochastic projection (start and horizon are modelling choices, but they set how much the threshold costs); the
 # stress tests and the ageing cost period are varied one at a time.
 MENU_PROB = [0.6, 0.7, 0.8]
-MENU_START = {'after': ('after adjustment', []), 'adjustment': ('first adjustment year', [stochastic_start_at_adjustment])}
+MENU_START = {'after': ('after adjustment', []), 'adjustment': ('first adjustment year', [EARLY_START])}
 MENU_HORIZON = [5, 10]
 MENU_STRESS = {'adverse_r_g_shock': [0.25, 0.75, 1.0], 'financial_stress_shock': [0.5, 1.5, 2.0],
                'lower_spb_shock': [0.25, 0.75, 1.0]}
@@ -672,22 +728,37 @@ def menu_table(df, adjustment_period=4, threshold=0.1):
     return pd.DataFrame(rows).set_index(['check', 'variant'])
 
 
-def build_global_specs(n_draws=200, seed=0, assumptions=GLOBAL_ASSUMPTIONS, real_rates=False):
+def build_global_specs(n_draws=200, seed=0, assumptions=GLOBAL_ASSUMPTIONS, real_rates=False, ranges=JOINT_RANGES,
+                       empirical=True):
     """
     Global sensitivity analysis: n_draws Latin hypercube draws of the given assumptions at once (JOINT_RUNS), with the
     stochastic criterion; all other settings stay at the baseline. Continuous assumptions (ASSUMPTIONS) are drawn uniformly over the range of their values in the individual
-    checks, discrete settings (DISCRETE_ASSUMPTIONS) with equal probability for each setting. Composite assumptions
-    (COMPOSITE_ASSUMPTIONS) set all their members at the same position in their ranges. The first
+    checks, or over ranges[name] if given (JOINT_RANGES), discrete settings (DISCRETE_ASSUMPTIONS) with equal probability for each setting. Composite assumptions
+    (COMPOSITE_ASSUMPTIONS) set all their members at the same position in their ranges. With empirical=True, the
+    assumptions in EMPIRICAL_DRAWS are instead drawn from the empirical distribution of the errors
+    (forecast_error_samples): the draw selects one observation, whose errors all members take. The first
     spec is the baseline. The data update and the random seed are not drawn. With real_rates=True, the interest rate
     draws are real rates: nominal rates move with the inflation draws of the same anchor (see assumption_fields).
     """
     from scipy.stats import qmc
     sample = qmc.LatinHypercube(d=len(assumptions), seed=seed).random(n_draws)
+    errors = forecast_error_samples() if empirical and any(a in EMPIRICAL_DRAWS for a in assumptions) else None
     specs = [baseline_spec()]
     for i, u in enumerate(sample):
         fields, params = {'model_kwargs': {}, 'attributes': {}, 'overrides': [], 'setup': [], 'binding_kwargs': {}}, {}
         for name, x in zip(assumptions, u):
-            if name in COMPOSITE_ASSUMPTIONS:
+            if errors is not None and name in EMPIRICAL_DRAWS:
+                source, sort_col, columns = EMPIRICAL_DRAWS[name]
+                obs = errors[source].sort_values(sort_col)
+                row = obs.iloc[min(int(x * len(obs)), len(obs) - 1)]
+                part_fields = {}
+                for member, col in columns.items():
+                    params[member] = round(float(row[col]), 4)
+                    for k, part in assumption_fields(member, params[member], real_rates).items():
+                        part_fields[k] = {**part_fields.get(k, {}), **part} if isinstance(part, dict) else part_fields.get(k, []) + part
+                params[f'{name}_obs'] = str(row.name)  # observation drawn (year, country:vintage or country:scenario)
+                v = params[name] if name in columns else float(x)
+            elif name in COMPOSITE_ASSUMPTIONS:
                 part_fields = {}
                 for member in COMPOSITE_ASSUMPTIONS[name][1]:
                     lo, hi = min(ASSUMPTIONS[member][4]), max(ASSUMPTIONS[member][4])
@@ -699,7 +770,7 @@ def build_global_specs(n_draws=200, seed=0, assumptions=GLOBAL_ASSUMPTIONS, real
                 options = DISCRETE_ASSUMPTIONS[name][1]
                 v, part_fields = options[min(int(x * len(options)), len(options) - 1)]
             else:
-                lo, hi = min(ASSUMPTIONS[name][4]), max(ASSUMPTIONS[name][4])
+                lo, hi = ranges.get(name, (min(ASSUMPTIONS[name][4]), max(ASSUMPTIONS[name][4])))
                 v = float(lo + x * (hi - lo))
                 part_fields = assumption_fields(name, v, real_rates)
             params[name] = v
@@ -1190,9 +1261,10 @@ def effects_table(df, adjustment_periods=(4, 7), exclude_groups=('Baseline', 'No
     return out
 
 
-# Accommodative and restrictive combinations: 10th and 90th percentile of the draws. The outer tails are combinations
-# of assumptions at the ends of their ranges, drawn independently, which are economically implausible jointly.
-COMBINATIONS = {'draws:accommodative': ('accommodative', 0.10), 'draws:restrictive': ('restrictive', 0.90)}
+# Accommodative and restrictive combinations: 25th and 75th percentile of the draws, the middle half of the outcomes
+# (the individual checks use the 25th and 75th percentiles of each input). The joint draws come from the full
+# distribution of past errors, whose tails (e.g. the 2006-2008 boom-bust vintages) would dominate outer percentiles.
+COMBINATIONS = {'draws:accommodative': ('accommodative', 0.25), 'draws:restrictive': ('restrictive', 0.75)}
 
 
 def draw_combinations(glob, combinations=COMBINATIONS):
