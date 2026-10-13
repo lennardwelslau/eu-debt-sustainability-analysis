@@ -614,8 +614,10 @@ def build_oat_specs(latest_file=None, real_rates=False):
 MENU_PROB = [0.6, 0.7, 0.8]
 MENU_START = {'after': ('after adjustment', []), 'adjustment': ('first adjustment year', [EARLY_START])}
 MENU_HORIZON = [5, 10]
-MENU_STRESS = {'adverse_r_g_shock': [0.25, 0.75, 1.0], 'financial_stress_shock': [0.5, 1.5, 2.0],
-               'lower_spb_shock': [0.25, 0.75, 1.0]}
+# Stress-test sizes: the same symmetric band of +-50% of the baseline size as the individual checks and the lenient
+# and strict CALIBRATION_SCENARIOS
+MENU_STRESS = {'adverse_r_g_shock': [0.25, 0.75], 'financial_stress_shock': [0.5, 1.5],
+               'lower_spb_shock': [0.25, 0.75]}
 MENU_AGEING_PERIOD = [5]
 
 
