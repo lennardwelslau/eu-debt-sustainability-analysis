@@ -2,31 +2,32 @@
 #               European Commission Debt Sustainability Analysis - Sensitivity Analysis     #
 # ========================================================================================= #
 #
-# Helper functions for code/exercises/sensitivity_analysis.ipynb. The exercise runs the model
-# (StochasticDsaModel.find_spb_binding) under alternative data and assumptions and records how the SPB
-# target responds. It has four parts:
+# Helper functions for code/exercises/sensitivity_analysis.ipynb and paper/sensitivity_note. The exercise runs the model
+# (StochasticDsaModel.find_spb_binding) under alternative data and assumptions and records how the SPB target responds.
+# It has four parts:
 #
-# 1. Specifications: each check is one spec, a dict with model keyword arguments, model attributes,
-#    input overrides (relative to the baseline data), find_spb_binding keyword arguments and optional
-#    setup functions applied after initialisation (build_oat_specs, build_menu_specs, build_global_specs). Settings
-#    are grouped in blocks by what settles them (BLOCKS): 1. forecasts that set the centre line, with ranges calibrated
-#    to historical forecast errors and Ageing Report scenarios (CALIBRATED_RANGES, calibration_table); 2. model
-#    parameters, with ranges from the literature (LITERATURE_RANGES); 3. estimation of risk; 4. risk standard, shown as
-#    a menu with prices (build_menu_specs); and data and definitions. Blocks 1 and 2 are drawn jointly in the global
-#    analysis (JOINT_RUNS).
-# 2. Runner: run_specs runs specs for countries and adjustment periods in parallel (ProcessPoolExecutor)
-#    and caches results by task, so reruns only compute missing tasks.
-# 3. Results: one tidy DataFrame with one row per spec, country and adjustment period, deviations from the
-#    baseline in three tiers (own criterion, DSA target, binding target; add_own_criterion), noise band from
-#    alternative seeds, tables of effects by check and of the prices of the risk standard, accommodative and
-#    restrictive combinations from the global draws and an optional variance decomposition.
-# 4. Charts: mean effect by check, range of targets by country, debt paths by country.
+# 1. Specifications: each check is one spec, a dict with model keyword arguments, model attributes, input overrides
+#    (relative to the baseline data), find_spb_binding keyword arguments and optional setup functions applied after
+#    initialisation (build_oat_specs, build_menu_specs, build_global_specs). Checks are grouped in blocks by what settles
+#    them (BLOCKS): 1. forecasts that set the centre line, shifted by round amounts of about the size of past forecast
+#    errors (OAT_VALUES; errors in calibration_table and forecast_error_samples); 2. model parameters, with ranges from
+#    the literature (LITERATURE_RANGES); 3. estimation of risk; 4. risk standard, varied over alternative settings
+#    (build_menu_specs); and data. Blocks 1 and 2 are also drawn jointly (JOINT_RUNS), the forecasts from the empirical
+#    distribution of past errors (EMPIRICAL_DRAWS).
+# 2. Runner: run_specs runs specs for countries and adjustment periods in parallel (ProcessPoolExecutor) and caches
+#    results by task, so reruns only compute missing tasks.
+# 3. Results: one tidy DataFrame with one row per spec, country and adjustment period; the DSA target from the DSA
+#    criteria alone, without the adjustment floor and the rounding of the Commission sheets (dsa_target_criteria_only);
+#    deviations from the baseline in three tiers (own criterion, DSA target, binding target; add_own_criterion); noise
+#    band from alternative seeds; tables of effects; and combinations of assumptions from the joint draws.
+# 4. Charts: mean effect by check, targets by country in the joint draws, debt by country under the baseline SPB
+#    path in the joint draws (fixed_path_runs).
 #
 # Setup functions must be defined at module level (not in a notebook) so that specs can be sent to worker
 # processes; use functools.partial to pass arguments.
 #
 # Author: Lennard Welslau
-# Updated: 2026-10-05
+# Updated: 2026-10-11
 # ========================================================================================= #
 
 import contextlib
@@ -51,7 +52,7 @@ OUTPUT_DIR = REPO_ROOT / 'output' / 'sensitivity'
 
 # Colours: matplotlib default cycle, black for the baseline, grey for ranges
 GREY, LIGHT_GREY, INK, MUTED = 'grey', 'lightgrey', 'black', 'dimgrey'
-BASELINE, ACCOMMODATIVE, RESTRICTIVE, COMMISSION, CURRENT = 'black', 'C2', 'C3', 'C1', 'grey'
+BASELINE, BAND, CURRENT = 'black', 'C0', 'grey'
 TARGET_LABELS = {'dsa': 'DSA criteria', 'binding': 'DSA, EDP and safeguards'}
 # Default upper bound of the annual adjustment in find_spb_binding (pp. per year, FiscalRules._find_spb_binding_rules);
 # runs can set a higher bound with the model attribute adjustment_bound (run_specs(attributes=...))
@@ -109,22 +110,6 @@ def baseline_spec(stochastic=True):
 
 # Setup functions ----------------------------------------------------------------------- #
 
-def shift_potential_growth(model, delta):
-    """
-    Shift potential growth and baseline real growth in all projection years after T by delta (pp.), so that the
-    baseline output gap is unchanged. (Shifting potential growth alone would open a growing output gap where the input
-    file provides baseline real GDP for all years, as the Commission workbooks do.)
-    """
-    for t in range(1, model.projection_period):
-        model.rg_pot_bl[t] += delta
-        model.rg_bl[t] += delta
-        model.rgdp_pot_bl[t] = model.rgdp_pot_bl[t - 1] * (1 + model.rg_pot_bl[t] / 100)
-        model.rgdp_bl[t] = model.rgdp_bl[t - 1] * (1 + model.rg_bl[t] / 100)
-    model.output_gap_bl = (model.rgdp_bl / model.rgdp_pot_bl - 1) * 100
-    model.rg_pot, model.rgdp_pot = model.rg_pot_bl.copy(), model.rgdp_pot_bl.copy()
-    model.rg, model.rgdp, model.output_gap = model.rg_bl.copy(), model.rgdp_bl.copy(), model.output_gap_bl.copy()
-
-
 def shift_anchor(model, variable, anchor, delta):
     """
     Shift the path of a market rate or inflation ('i_st', 'i_lt' or 'pi') as if its T+10 or T+30 anchor (anchor=10 or
@@ -169,13 +154,6 @@ def shift_potential_growth_t10(model, delta):
     model.rg, model.rgdp, model.output_gap = model.rg_bl.copy(), model.rgdp_bl.copy(), model.output_gap_bl.copy()
 
 
-def scale_ageing_cost(model, factor):
-    """
-    Scale the change in ageing costs relative to T by factor.
-    """
-    model.ageing_cost = model.ageing_cost[0] + factor * (model.ageing_cost - model.ageing_cost[0])
-
-
 def shift_ageing_cost(model, delta, horizon=None):
     """
     Add delta (pp. of GDP) to the change in ageing costs between T and T+horizon, rising linearly from zero in T and
@@ -184,16 +162,6 @@ def shift_ageing_cost(model, delta, horizon=None):
     """
     horizon = horizon or AGEING_HORIZON
     model.ageing_cost = model.ageing_cost + delta * np.arange(len(model.ageing_cost)) / horizon
-
-
-def use_repayment_profile(model):
-    """
-    Repayment profile of long-term debt from the input workbook (BOND_REPAYMENT, bond_data=True) where the workbook has
-    one; other countries keep the share of long-term debt maturing each year (used in the global draws).
-    """
-    if model.df_deterministic_data.loc[model.start_year + 1:, 'BOND_REPAYMENT'].notna().any():
-        model.bond_data = True
-        model._clean_bond_repayment()
 
 
 def stochastic_start_at_adjustment(model, criterion='end of adjustment'):
@@ -219,8 +187,7 @@ EARLY_START = functools.partial(stochastic_start_at_adjustment, criterion='end o
 
 # Calibration of the ranges ------------------------------------------------------------ #
 
-# The forecasts that set the centre line of the projection are varied over the interquartile range of historical
-# errors (realised minus forecast), the same range for all countries:
+# Forecast errors (realised minus forecast), the same for all countries:
 # - real GDP growth and CPI inflation: IMF WEO forecasts, average error over t+1 to t+5, autumn vintages 2000-2018,
 #   27 EU countries, demeaned by country (the average error, a bias, is reported separately);
 # - short- and long-term rates: German zero-coupon curve (Bundesbank), realised 1-year and 10-year rates minus the
@@ -228,13 +195,12 @@ EARLY_START = functools.partial(stochastic_start_at_adjustment, criterion='end o
 # - ageing costs: deviation of the 2024 Ageing Report scenarios (all except the pension policy scenarios) from the
 #   baseline change in ageing costs between 2024 and 2038 (T+14, the end of the DSA horizon for a 4-year adjustment),
 #   all countries and scenarios.
-# The forward-rate errors are nominal but shift the real rates; with inflation drawn on top, the range of nominal rates
-# is somewhat wider than in the data. In the joint draws, the short- and long-term rates are one factor
-# (COMPOSITE_ASSUMPTIONS): their errors come from the same yield curve and are highly correlated.
-# Rates, inflation and growth are shifted at the T+10 anchor and converge back to the baseline by T+30 (shift_anchor,
-# shift_potential_growth_t10); ageing costs by shift_ageing_cost. calibration_table() recomputes the ranges from the
-# data; CALIBRATED_RANGES holds the rounded values used in the checks, so that run caches do not depend on data
-# revisions.
+# The forward-rate errors are nominal but shift the real rates; with inflation shifted on top, the range of nominal rates
+# is somewhat wider than in the data. Rates, inflation and growth are shifted at the T+10 anchor and converge back to the
+# baseline by T+30 (shift_anchor, shift_potential_growth_t10); ageing costs by shift_ageing_cost. calibration_table()
+# reports the mean error and the interquartile range of the errors (CALIBRATED_RANGES). The individual checks shift each
+# forecast by OAT_VALUES, and the joint draws draw from the stored errors (forecast_error_samples, EMPIRICAL_DRAWS), so
+# that run caches do not depend on data revisions.
 
 REFERENCE_DIR = REPO_ROOT / 'data' / 'RawData' / 'reference'
 WEO_FILE = REFERENCE_DIR / 'WEO-MacroForecasts-042024.xlsx'
@@ -263,13 +229,26 @@ AGEING_SCENARIOS = {  # Ageing Report 2024 statistical annex: total cost of agei
     'Risk scenario (health care and long-term care)': 'Table II.1.136',
 }
 
-# Ranges used in the checks: interquartile range of the errors (calibration_table, rounded to 0.01)
+# Interquartile range of the errors (calibration_table, rounded to 0.01), reported with the errors
 CALIBRATED_RANGES = {
     'rate_st_T10': (-1.22, 0.40),
     'rate_lt_T10': (-1.24, 0.89),
     'inflation_T10': (-0.74, 0.64),
     'potential_growth': (-0.84, 1.08),
     'ageing_shift': (-0.24, 0.14),
+}
+
+
+# Values of the individual checks of the forecasts: round, symmetric shifts of about the size of typical errors (half the
+# width of the interquartile range of CALIBRATED_RANGES: 0.81 and 1.07 for the rates, 0.69 for inflation, 0.96 for
+# growth, 0.19 for ageing costs). Symmetric shifts show the asymmetric response of the targets directly; the joint draws
+# use the full distribution of the errors (EMPIRICAL_DRAWS).
+OAT_VALUES = {
+    'rate_st_T10': (-1.0, 1.0),
+    'rate_lt_T10': (-1.0, 1.0),
+    'inflation_T10': (-0.75, 0.75),
+    'potential_growth': (-1.0, 1.0),
+    'ageing_shift': (-0.2, 0.2),
 }
 
 
@@ -414,13 +393,14 @@ EMPIRICAL_DRAWS = {
 }
 
 
-# Ranges of the model parameters, from the literature (values of the individual checks; the global analysis draws
-# uniformly between the lowest and highest value, persistence with equal probability for each value):
-# - fiscal multiplier (first-year output effect of a change in the SPB; baseline 0.75, Carnot and de Castro 2015):
-#   0.5 to 1.5. Most estimates of spending multipliers lie between 0.6 and 1 (Ramey 2019; Ramey and Zubairy 2018;
-#   Barro and Redlick 2011: 0.4-0.5 on impact); multipliers of the consolidations in Europe after 2010 were about 1.5
-#   (Blanchard and Leigh 2013: about 1 above the 0.5 forecasters assumed), and multipliers without a monetary policy
-#   response, as for one country in a monetary union, are 1.5 or more (Nakamura and Steinsson 2014; Chodorow-Reich 2019).
+# Ranges of the model parameters, from the literature (values of the individual checks; the joint draws draw the
+# multiplier uniformly over JOINT_RANGES, the semi-elasticity uniformly over its range and the persistence with equal
+# probability for each value):
+# - fiscal multiplier (first-year output effect of a change in the SPB; baseline 0.75, Carnot and de Castro 2015): 0.5
+#   and 1.0, where most estimates for normal times lie (Ramey 2019; Ramey and Zubairy 2018; Barro and Redlick 2011:
+#   0.4-0.5 on impact), and 1.5 as a crisis case: multipliers of the consolidations in Europe after 2010 were about 1.5
+#   (Blanchard and Leigh 2013), and regional estimates without a monetary policy response are 1.5 or more (Nakamura and
+#   Steinsson 2014; Chodorow-Reich 2019).
 # - persistence of the multiplier effect (baseline 3 years): 2 to 5 years. Two-year cumulative multipliers are at
 #   least as large as impact multipliers (Barro and Redlick 2011; Ramey and Zubairy 2018), and consolidations can have
 #   lasting effects on output (Fatas and Summers 2018; Gechert, Horn and Paetz 2019).
@@ -441,7 +421,8 @@ JOINT_RANGES = {'fiscal_multiplier': (0.5, 1.0)}
 # Individual checks ------------------------------------------------------------------ #
 
 # Continuous assumptions: name -> (group, check label, function value -> spec fields, baseline value, OAT values).
-# The global sensitivity analysis draws the same assumptions over the range of the OAT values.
+# The joint draws use the empirical errors for the forecasts (EMPIRICAL_DRAWS) and the range of the OAT values, or
+# JOINT_RANGES, for the model parameters.
 def _override(code, years, **change):
     return {'overrides': [{'code': code, 'years': years, **change}]}
 
@@ -459,19 +440,17 @@ def _inflation_real_rates(anchor, delta):
 
 
 ASSUMPTIONS = {
-    # Forecasts that set the centre line: interquartile range of historical errors (CALIBRATED_RANGES), shifted at the
+    # Forecasts that set the centre line: round shifts of about the size of typical errors (OAT_VALUES), shifted at the
     # T+10 anchor and converging back to the baseline by T+30
-    'rate_st_T10': ('Macro', 'Short-term rate T+10', lambda v: _anchor('i_st', 10, v), 0, list(CALIBRATED_RANGES['rate_st_T10'])),
-    'rate_lt_T10': ('Macro', 'Long-term rate T+10', lambda v: _anchor('i_lt', 10, v), 0, list(CALIBRATED_RANGES['rate_lt_T10'])),
-    'inflation_T10': ('Macro', 'Inflation T+10', lambda v: _anchor('pi', 10, v), 0, list(CALIBRATED_RANGES['inflation_T10'])),
-    'potential_growth': ('Macro', 'Potential growth T+10', lambda v: {'setup': [functools.partial(shift_potential_growth_t10, delta=v)]}, 0, list(CALIBRATED_RANGES['potential_growth'])),
-    'ageing_shift': ('Macro', 'Ageing costs (shift)', lambda v: {'setup': [functools.partial(shift_ageing_cost, delta=v)]}, 0, list(CALIBRATED_RANGES['ageing_shift'])),
-    # Long-run anchors (no evidence on errors 30 years ahead; individual checks only) and earlier specifications
+    'rate_st_T10': ('Macro', 'Short-term rate T+10', lambda v: _anchor('i_st', 10, v), 0, list(OAT_VALUES['rate_st_T10'])),
+    'rate_lt_T10': ('Macro', 'Long-term rate T+10', lambda v: _anchor('i_lt', 10, v), 0, list(OAT_VALUES['rate_lt_T10'])),
+    'inflation_T10': ('Macro', 'Inflation T+10', lambda v: _anchor('pi', 10, v), 0, list(OAT_VALUES['inflation_T10'])),
+    'potential_growth': ('Macro', 'Potential growth T+10', lambda v: {'setup': [functools.partial(shift_potential_growth_t10, delta=v)]}, 0, list(OAT_VALUES['potential_growth'])),
+    'ageing_shift': ('Macro', 'Ageing costs (shift)', lambda v: {'setup': [functools.partial(shift_ageing_cost, delta=v)]}, 0, list(OAT_VALUES['ageing_shift'])),
+    # Long-run anchors (no evidence on errors 30 years ahead; individual checks only)
     'rate_st_T30': ('Macro', 'Short-term rate T+30', lambda v: _anchor('i_st', 30, v), 0, [-0.5, 0.5]),
     'rate_lt_T30': ('Macro', 'Long-term rate T+30', lambda v: _anchor('i_lt', 30, v), 0, [-0.5, 0.5]),
     'inflation_T30': ('Macro', 'Inflation T+30', lambda v: _anchor('pi', 30, v), 0, [-0.25, 0.25]),
-    'potential_growth_all': ('Macro', 'Potential growth (all years)', lambda v: {'setup': [functools.partial(shift_potential_growth, delta=v)]}, 0, [-0.5, 0.5]),
-    'ageing_scale': ('Macro', 'Ageing cost change (scale)', lambda v: {'setup': [functools.partial(scale_ageing_cost, factor=v)]}, 1, [0.5, 1.5]),
     # Model parameters: ranges from the literature (LITERATURE_RANGES)
     'elasticity_scale': ('Macro', 'Budget balance elasticity (scale)', lambda v: _override('BUDGET_BALANCE_ELASTICITY', None, scale=v), 1, list(LITERATURE_RANGES['elasticity_scale'])),
     'fiscal_multiplier': ('Multiplier', 'Fiscal multiplier', lambda v: {'model_kwargs': {'fiscal_multiplier': v}}, 'fiscal_multiplier', list(LITERATURE_RANGES['fiscal_multiplier'])),
@@ -480,68 +459,38 @@ ASSUMPTIONS = {
     'lower_spb_shock': ('Stress tests', 'Lower SPB shock', lambda v: {'attributes': {'lower_spb_shock': v}}, 0.5, [0.25, 0.75]),
 }
 
-# Discrete settings drawn in the global sensitivity analysis: name -> (label, [(value, spec fields)]), the baseline
-# setting included. Values are numbers (used as such in the variance decomposition) or strings (categories).
+# Discrete settings drawn in the joint draws: name -> (label, [(value, spec fields)]), the baseline setting included.
 DISCRETE_ASSUMPTIONS = {
-    'ageing_cost_period': ('Ageing cost period', [(p, {'model_kwargs': {'ageing_cost_period': p}}) for p in [5, 10]]),
-    'stock_flow_zero': ('Stock-flow adjustment zero after T', [
-        (0, {}), (1, _override('STOCK_FLOW_RATIO', 'after', value=0))]),
-    'repayment_profile': ('Repayment profile (Eurostat)', [(0, {}), (1, {'setup': [use_repayment_profile]})]),
     'multiplier_persistence': ('Multiplier persistence', [
         (p, {'model_kwargs': {'fiscal_multiplier_persistence': p}}) for p in LITERATURE_RANGES['multiplier_persistence']]),
-    'prob_target': ('Probability target', [(p, {'attributes': {'prob_target': p}}) for p in [0.6, 0.7, 0.8]]),
-    'stochastic_period': ('Stochastic period', [(p, {'model_kwargs': {'stochastic_period': p}}) for p in [5, 10]]),
-    'stochastic_start': ('Stochastic start in first adjustment year', [
-        (0, {}), (1, {'setup': [EARLY_START]})]),
-    'shock_sample_start': ('Shock sample start', [(y, {'model_kwargs': {'shock_sample_start': y}}) for y in [1990, 2000, 2010]]),
-    'shock_frequency_annual': ('Annual shock frequency', [(0, {}), (1, {'model_kwargs': {'shock_frequency': 'annual'}})]),
-    'var_bootstrap': ('Shock estimation: VAR bootstrap', [(0, {}), (1, {'model_kwargs': {'estimation': 'var_bootstrap'}})]),
-    'winsorize_1_99': ('Shocks winsorised at the 1st and 99th percentiles', [
-        (0, {}), (1, {'model_kwargs': {'winsorize_sample': 0.01}})]),
 }
 
-# Blocks of settings, by what settles them (group labels of the individual checks):
+# Blocks of checks, by what settles them (group labels of the individual checks):
 # 1. Forecasts that set the centre line of the projection (rates, inflation, potential growth, ageing costs): settled by
-#    evidence; ranges from historical forecast errors and Ageing Report scenarios (CALIBRATED_RANGES). The long-run
-#    anchors (T+30) are plain checks.
+#    evidence; shifts of about the size of past forecast errors (OAT_VALUES). The long-run anchors (T+30) are plain
+#    checks.
 # 2. Model parameters (fiscal multiplier, its persistence, budget semi-elasticity): settled by the literature
-#    (LITERATURE_RANGES). Blocks 1 and 2 are drawn jointly in the global analysis (JOINT_RUNS).
+#    (LITERATURE_RANGES). Blocks 1 and 2 are also drawn jointly (JOINT_RUNS).
 # 3. Estimation of risk in the stochastic analysis (start and horizon of the stochastic projection, shock sample,
 #    frequency, distribution, winsorisation): settled by statistical practice; individual checks.
-# 4. Risk standard (probability threshold, stress-test sizes, ageing cost period): no true value; a menu with the price
-#    of each choice (build_menu_specs) and the lenient and strict CALIBRATION_SCENARIOS.
-# Data and definitions: data update, stock-flow adjustments after T (non-zero after the forecast years only for
-# Finland, Luxembourg and Greece, a question of gross versus net debt) and the repayment profile of debt.
+# 4. Risk standard (probability threshold, stress-test sizes, ageing cost period): no true value; alternative settings
+#    (build_menu_specs) and the lenient and strict CALIBRATION_SCENARIOS.
+# Data: data update and repayment profile of debt. The Commission's stock-flow adjustments are kept as given.
 BLOCKS = {
     'Forecasts': '1. Forecasts (centre line)',
     'Parameters': '2. Model parameters',
     'Risk estimation': '3. Estimation of risk',
     'Risk standard': '4. Risk standard',
-    'Data': 'Data and definitions',
+    'Data': 'Data',
 }
 FORECASTS, MODEL_PARAMETERS, ESTIMATION, RISK_STANDARD, DATA = BLOCKS  # PARAMETERS is the list of parameter codes (data_pipeline)
 
 FORECAST_ASSUMPTIONS = ['rates_T10', 'weo_T10', 'ageing_shift']  # drawn from the empirical errors (EMPIRICAL_DRAWS)
 PARAMETER_ASSUMPTIONS = ['fiscal_multiplier', 'multiplier_persistence', 'elasticity_scale']
-ESTIMATION_SETTINGS = ['stochastic_start', 'stochastic_period', 'shock_sample_start', 'shock_frequency_annual',
-                       'var_bootstrap', 'winsorize_1_99']
-RISK_STANDARD_SETTINGS = ['prob_target', 'adverse_r_g_shock', 'financial_stress_shock', 'lower_spb_shock',
-                          'ageing_cost_period']
 
-# Global analysis: blocks 1 and 2 drawn jointly, all other settings at the baseline
+# Joint draws: blocks 1 and 2 drawn jointly, all other settings at the baseline
 JOINT_ASSUMPTIONS = FORECAST_ASSUMPTIONS + PARAMETER_ASSUMPTIONS
 JOINT_RUNS = {'joint': JOINT_ASSUMPTIONS}
-GLOBAL_ASSUMPTIONS = JOINT_ASSUMPTIONS
-
-# Categories of the variance decomposition (optional): by block, and by input
-GLOBAL_CATEGORIES = {'Forecasts': FORECAST_ASSUMPTIONS, 'Model parameters': PARAMETER_ASSUMPTIONS}
-INPUT_CATEGORIES = {
-    'Interest rates': ['rates_T10'],
-    'Potential growth and inflation': ['weo_T10'],
-    'Ageing costs': ['ageing_shift'],
-    'Fiscal multiplier': ['fiscal_multiplier', 'multiplier_persistence'],
-    'Budget semi-elasticity': ['elasticity_scale'],
-}
 
 # Calibration scenarios of the risk standard: all settings at the lenient or at the strict end of their range (the
 # ageing cost period cannot be stricter than the baseline of 10 years, which covers the horizon of the DSA criteria)
@@ -554,26 +503,18 @@ CALIBRATION_SCENARIOS = {
 }
 
 # Block of each continuous assumption (group label of its individual checks)
-KIND_OF = {name: (RISK_STANDARD if name in RISK_STANDARD_SETTINGS
+KIND_OF = {name: (RISK_STANDARD if name in ('adverse_r_g_shock', 'financial_stress_shock', 'lower_spb_shock')
                   else MODEL_PARAMETERS if name in ('fiscal_multiplier', 'elasticity_scale') else FORECASTS)
            for name in ASSUMPTIONS}
 
 
-# Assumptions drawn as one factor in the global analysis: name -> (label, members). One draw sets the position in the
-# range of each member (ASSUMPTIONS), e.g. both rates at the same quantile of their ranges.
+# Assumptions drawn as one factor in the joint draws: name -> (label, members). With empirical draws
+# (EMPIRICAL_DRAWS), the members take the errors of the same observation; otherwise one draw sets the same position
+# in the range of each member (ASSUMPTIONS).
 COMPOSITE_ASSUMPTIONS = {
     'rates_T10': ('Short- and long-term rates T+10', ['rate_st_T10', 'rate_lt_T10']),
     'weo_T10': ('Potential growth and inflation T+10', ['potential_growth', 'inflation_T10']),
 }
-
-
-def assumption_label(name):
-    """
-    Label of an assumption of the global analysis.
-    """
-    if name in COMPOSITE_ASSUMPTIONS:
-        return COMPOSITE_ASSUMPTIONS[name][0]
-    return ASSUMPTIONS[name][1] if name in ASSUMPTIONS else DISCRETE_ASSUMPTIONS[name][0]
 
 
 def _fmt(v):
@@ -604,14 +545,14 @@ def assumption_spec(name, value, real_rates=False, **kwargs):
 def build_oat_specs(latest_file=None, real_rates=False):
     """
     Individual checks (baseline first), grouped by block (BLOCKS): forecasts, model parameters, estimation of risk,
-    risk standard (with the lenient and strict CALIBRATION_SCENARIOS) and data and definitions, then the noise band. latest_file: workbook for the data update check (default latest_input_file()). real_rates:
-    inflation checks keep real interest rates unchanged (see assumption_fields). Ids do not depend on the grouping, so
-    that cached runs remain valid.
+    risk standard (with the lenient and strict CALIBRATION_SCENARIOS) and data, then the noise band. latest_file:
+    workbook for the data update check (default latest_input_file()). real_rates: inflation checks keep real interest
+    rates unchanged (see assumption_fields). Ids do not depend on the grouping, so that cached runs remain valid.
     """
     specs = [baseline_spec()]
     spec = make_spec
 
-    # 1. Forecasts that set the centre line (calibrated ranges), then the long-run anchors
+    # 1. Forecasts that set the centre line (OAT_VALUES), then the long-run anchors
     for name in ['rate_st_T10', 'rate_lt_T10', 'inflation_T10', 'potential_growth', 'ageing_shift',
                  'rate_st_T30', 'rate_lt_T30', 'inflation_T30']:
         specs += [assumption_spec(name, v, real_rates=real_rates) for v in ASSUMPTIONS[name][4]]
@@ -649,7 +590,7 @@ def build_oat_specs(latest_file=None, real_rates=False):
     specs += [spec(f'calibration:{k}', RISK_STANDARD, 'Calibration scenario', k, **v)
               for k, v in CALIBRATION_SCENARIOS.items()]
 
-    # Data and definitions. Starting values (SPB, balances, debt in T) are data, not assumptions: they are not varied.
+    # Data. Starting values (SPB, balances, debt in T) are data, not assumptions: they are not varied.
     # The data update shows how the latest data (later reference year, forecasts replaced by outturns) change the
     # targets. Repayment profile of long-term debt from Eurostat debt by residual maturity (BOND_REPAYMENT) instead of
     # the share of long-term debt maturing each year; countries without Eurostat data fail these runs.
@@ -658,7 +599,7 @@ def build_oat_specs(latest_file=None, real_rates=False):
                       f"latest vintage ({os.path.splitext(os.path.basename(latest_file))[0].replace('dsa_inputs_', '')})",
                       input_file=latest_file))
     # The Commission's stock-flow adjustments are kept as given in all runs (country-specific inputs, not a modelling
-    # assumption); the former check setting them to zero after T is dropped.
+    # assumption).
     specs.append(spec('data:repayment_profile', DATA, 'Repayment profile (Eurostat)', 'residual maturity buckets',
                       model_kwargs={'bond_data': True}))
 
@@ -666,10 +607,10 @@ def build_oat_specs(latest_file=None, real_rates=False):
     return specs
 
 
-# Risk standard: settings without a true value, shown as a menu with the price of each choice (change of the target
-# relative to the baseline). The stochastic criterion is a grid of probability threshold, start and horizon of the
-# stochastic projection (start and horizon are modelling choices, but they set how much the threshold costs); the
-# stress tests and the ageing cost period are varied one at a time.
+# Risk standard: settings without a true value, varied over alternative settings (change of the target relative to
+# the baseline). The stochastic criterion is a grid of probability threshold, start and horizon of the stochastic
+# projection (start and horizon are modelling choices, but they set how strongly the threshold affects the target);
+# the stress tests and the ageing cost period are varied one at a time.
 MENU_PROB = [0.6, 0.7, 0.8]
 MENU_START = {'after': ('after adjustment', []), 'adjustment': ('first adjustment year', [EARLY_START])}
 MENU_HORIZON = [5, 10]
@@ -680,7 +621,7 @@ MENU_AGEING_PERIOD = [5]
 
 def build_menu_specs():
     """
-    Menu of the risk standard (baseline first): grid of probability threshold (MENU_PROB), start (MENU_START) and
+    Alternative settings of the risk standard (baseline first): grid of probability threshold (MENU_PROB), start (MENU_START) and
     horizon (MENU_HORIZON) of the stochastic criterion, stress-test sizes (MENU_STRESS) and ageing cost period
     (MENU_AGEING_PERIOD). Settings equal to the baseline are left out of the spec fields, so that runs of the individual
     checks with the same settings are read from the cache.
@@ -706,12 +647,11 @@ def build_menu_specs():
     return specs
 
 
-def menu_table(df, adjustment_period=4, threshold=0.1):
+def menu_table(df, adjustment_period=4):
     """
-    Price of each choice of the risk standard (build_menu_specs) in three tiers (TIERS): change of the SPB required by
-    the criterion the choice acts on, of the DSA target and of the binding target relative to the baseline; mean across
-    countries, number of countries whose target changes by more than threshold (pp.), largest change and the country
-    with the largest change.
+    Effect of each alternative setting of the risk standard (build_menu_specs) in three tiers (TIERS): change of the
+    SPB required by the criterion the setting acts on, of the DSA target and of the binding target relative to the
+    baseline; mean across countries, largest change in absolute terms and its country.
     """
     if 'own_delta_target' not in df:
         df = add_own_criterion(df)
@@ -721,24 +661,23 @@ def menu_table(df, adjustment_period=4, threshold=0.1):
         row = {'check': check, 'variant': variant}
         for key, (_, col) in TIERS.items():
             x = feasible(g, key).set_index('country')[col].dropna()
-            row.update({f'{key} mean': x.mean(), f'{key} countries > {threshold:g} pp.': int((x.abs() > threshold).sum()),
-                        f'{key} largest': x.loc[x.abs().idxmax()] if len(x) else np.nan,
-                        f'{key} country': x.abs().idxmax() if len(x) else ''})
+            row.update({f'{key} mean': x.mean(), f'{key} largest': _largest(x), f'{key} country': _largest_country(x)})
         rows.append(row)
     return pd.DataFrame(rows).set_index(['check', 'variant'])
 
 
-def build_global_specs(n_draws=200, seed=0, assumptions=GLOBAL_ASSUMPTIONS, real_rates=False, ranges=JOINT_RANGES,
+def build_global_specs(n_draws=200, seed=0, assumptions=JOINT_ASSUMPTIONS, real_rates=False, ranges=JOINT_RANGES,
                        empirical=True):
     """
-    Global sensitivity analysis: n_draws Latin hypercube draws of the given assumptions at once (JOINT_RUNS), with the
-    stochastic criterion; all other settings stay at the baseline. Continuous assumptions (ASSUMPTIONS) are drawn uniformly over the range of their values in the individual
-    checks, or over ranges[name] if given (JOINT_RANGES), discrete settings (DISCRETE_ASSUMPTIONS) with equal probability for each setting. Composite assumptions
-    (COMPOSITE_ASSUMPTIONS) set all their members at the same position in their ranges. With empirical=True, the
-    assumptions in EMPIRICAL_DRAWS are instead drawn from the empirical distribution of the errors
-    (forecast_error_samples): the draw selects one observation, whose errors all members take. The first
-    spec is the baseline. The data update and the random seed are not drawn. With real_rates=True, the interest rate
-    draws are real rates: nominal rates move with the inflation draws of the same anchor (see assumption_fields).
+    Joint draws: n_draws Latin hypercube draws of the given assumptions at once (JOINT_RUNS), with the stochastic
+    criterion; all other settings stay at the baseline. With empirical=True, the assumptions in EMPIRICAL_DRAWS are drawn
+    from the empirical distribution of the errors (forecast_error_samples): the draw selects one observation, whose
+    errors all members take. Other continuous assumptions (ASSUMPTIONS) are drawn uniformly over the range of their
+    values in the individual checks, or over ranges[name] (JOINT_RANGES); composite assumptions (COMPOSITE_ASSUMPTIONS)
+    set all their members at the same position in their ranges; discrete settings (DISCRETE_ASSUMPTIONS) take each
+    setting with equal probability. The first spec is the baseline. The data update and the random seed are not drawn.
+    With real_rates=True, the interest rate draws are real rates: nominal rates move with the inflation draws of the
+    same anchor (see assumption_fields).
     """
     from scipy.stats import qmc
     sample = qmc.LatinHypercube(d=len(assumptions), seed=seed).random(n_draws)
@@ -898,6 +837,51 @@ def dsa_criterion(model, targets, spb_start):
     return max(dsa, key=dsa.get) if dsa else None
 
 
+DSA_SCENARIOS = ['main_adjustment', 'lower_spb', 'financial_stress', 'adverse_r_g']
+
+
+def applicable_dsa_criteria(d):
+    """
+    SPB required by each DSA criterion that applies under the Commission rules (spb_target_dict of a run): the deficit
+    criterion and the less demanding variant of the debt criteria (debt declines in all scenarios and stochastically, or
+    debt stays below 60 percent in all scenarios); for countries with technical information, the deficit criterion and
+    debt below 60 percent in the baseline scenario. The adjustment floor is not included.
+    """
+    if 'debt_declines_main_adjustment' not in d:
+        return {k: d[k] for k in ('deficit_reduction', 'debt_below_60_main_adjustment') if k in d}
+    a = {k: d[k] for k in ['deficit_reduction', 'stochastic'] + [f'debt_declines_{s}' for s in DSA_SCENARIOS] if k in d}
+    b = {k: d[k] for k in ['deficit_reduction'] + [f'debt_below_60_{s}' for s in DSA_SCENARIOS] if k in d}
+    return a if max(a.values()) <= max(b.values()) else b
+
+
+def dsa_target_criteria_only(df, grid=None):
+    """
+    DSA target from the DSA criteria alone: the highest SPB of the applicable criteria (applicable_dsa_criteria),
+    without the adjustment floor, which the paper counts with the binding target, and without the rounding of the
+    annual adjustment to 0.01 of the Commission sheets (grid=0.01 restores it). The Commission's DSA target (with floor
+    and rounding) is kept as dsa_target_commission and dsa_criterion_commission. Runs without criteria keep their
+    values. The DSA debt paths are not recomputed.
+    """
+    out = df.copy()
+    out['dsa_target_commission'], out['dsa_criterion_commission'] = out['dsa_target'], out['dsa_criterion']
+    targets, criteria = [], []
+    for d, spb, n, t0, c0 in zip(out['spb_target_dict'], out['spb_T'], out['adjustment_period'], out['dsa_target'],
+                                 out['dsa_criterion']):
+        if not isinstance(d, dict) or 'deficit_reduction' not in d:
+            targets.append(t0)
+            criteria.append(c0)
+            continue
+        crit = applicable_dsa_criteria(d)
+        k = max(crit, key=crit.get)
+        a = (crit[k] - spb) / n
+        if grid:
+            a = np.ceil(round(a / grid, 6)) * grid
+        targets.append(spb + n * a)
+        criteria.append(k)
+    out['dsa_target'], out['dsa_criterion'] = targets, criteria
+    return out
+
+
 def collect_results(model, years_after=10):
     """
     Results of find_spb_binding recorded for each run, for two targets:
@@ -981,6 +965,65 @@ def run_task(task):
         out = {'error': f'{type(err).__name__}: {err}'}
     out['runtime'] = time.time() - t0
     return key, out
+
+
+def fixed_path_task(task):
+    """
+    Debt path of one spec, country and adjustment period under a given SPB path instead of the spec's own target:
+    (key, results). steps None: run find_spb_binding and return the final adjustment steps of the binding path
+    (including EDP and deficit resilience steps) with its debt path; otherwise project the spec with these steps.
+    Top-level function so that it can be sent to worker processes.
+    """
+    key, spec, country, n, input_file, rules, seed, model_kwargs, attributes, steps = task
+    out = {}
+    try:
+        with warnings.catch_warnings(), contextlib.redirect_stdout(io.StringIO()):
+            warnings.simplefilter('ignore')
+            model = build_model(spec, country, n, input_file, model_kwargs, attributes)
+            if steps is None:
+                np.random.seed(seed if spec['seed'] is None else spec['seed'])
+                model.find_spb_binding(rules=rules, stochastic=True, print_results=False, **spec['binding_kwargs'])
+                out['steps'] = (np.copy(model.spb_steps), np.copy(model.post_spb_steps))
+            else:
+                model.project(spb_steps=steps[0], post_spb_steps=steps[1])
+            years = range(model.start_year, min(model.start_year + model.adjustment_end + 10, model.end_year) + 1)
+            out['debt_path'] = {y: float(model.d[y - model.start_year]) for y in years}
+    except Exception as err:
+        out = {'error': f'{type(err).__name__}: {err}'}
+    return key, out
+
+
+def fixed_path_runs(specs, countries, adjustment_period=4, input_file=None, rules='commission', seed=0,
+                    model_kwargs=None, attributes=None, cache_file=None, max_workers=None):
+    """
+    Debt paths of specs (e.g. the joint draws) under the SPB path of the baseline binding target: the adjustment steps
+    of the baseline run of each country, held fixed, so that only the assumptions of each spec change. The first spec
+    is the baseline. Returns one row per spec and country (id, country, adjustment_period, debt_path), cached in
+    cache_file.
+    """
+    rows = _load_cache(cache_file) if cache_file else {}
+    rows = rows if isinstance(rows, dict) else {}
+    base = specs[0]
+    todo = [c for c in countries if (base['id'], c) not in rows]
+    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        tasks = [((base['id'], c), base, c, adjustment_period, input_file, rules, seed, model_kwargs, attributes, None)
+                 for c in todo]
+        for key, out in pool.map(fixed_path_task, tasks):
+            rows[key] = out
+        if cache_file and todo:
+            _save_cache(rows, cache_file)
+        tasks = [((s['id'], c), s, c, adjustment_period, input_file, rules, seed, model_kwargs, attributes,
+                  rows[(base['id'], c)].get('steps')) for s in specs[1:] for c in countries
+                 if (s['id'], c) not in rows and 'steps' in rows[(base['id'], c)]]
+        for k, (key, out) in enumerate(pool.map(fixed_path_task, tasks, chunksize=20), 1):
+            rows[key] = out
+            if cache_file and k % 1000 == 0:  # save progress
+                _save_cache(rows, cache_file)
+    if cache_file:
+        _save_cache(rows, cache_file)
+    ids = {s['id'] for s in specs}
+    return pd.DataFrame([{'id': i, 'country': c, 'adjustment_period': adjustment_period, **out}
+                         for (i, c), out in rows.items() if i in ids and c in countries]).drop(columns='steps', errors='ignore')
 
 
 def _setup_signature(f):
@@ -1095,8 +1138,9 @@ def run_specs(specs, countries, adjustment_periods=(4, 7), input_file=None, rule
 #                                          RESULTS                                          #
 # ========================================================================================= #
 
-# Two targets are recorded for each run: the binding target (DSA criteria, EDP and safeguards) and the DSA target
-# (DSA criteria only). Result functions and charts take target='dsa' or 'binding' and read the columns below.
+# Two targets are recorded for each run: the binding target (DSA criteria, adjustment floor, EDP and safeguards) and
+# the DSA target (as recorded, with the Commission's floor and rounding; dsa_target_criteria_only recomputes it from
+# the DSA criteria alone). Result functions and charts take target='dsa' or 'binding' and read the columns below.
 TARGETS = {
     'binding': {'target': 'binding_target', 'criterion': 'binding_criterion', 'debt_path': 'debt_path',
                 'annual_adjustment': 'annual_adjustment', 'debt_10y_after': 'debt_10y_after',
@@ -1235,14 +1279,22 @@ def noise_band(df, target='dsa', group='Noise'):
         noise_low='min', noise_high='max').reset_index()
 
 
-def effects_table(df, adjustment_periods=(4, 7), exclude_groups=('Baseline', 'Noise', 'Global'), threshold=0.1):
+def _largest(x):
+    x = x.dropna()
+    return x.loc[x.abs().idxmax()] if len(x) else np.nan
+
+
+def _largest_country(x):
+    x = x.dropna()
+    return x.abs().idxmax() if len(x) else ''
+
+
+def effects_table(df, adjustment_periods=(4, 7), exclude_groups=('Baseline', 'Noise', 'Global')):
     """
-    Main table: change of the SPB target relative to the baseline by check variant, mean, minimum and maximum across
-    countries (pp. of GDP) and the number of countries whose target changes by more than threshold (pp.), for the three
-    tiers (TIERS): own criterion (if add_own_criterion was applied), DSA target (DSA criteria only) and binding target
-    (DSA criteria, EDP and safeguards), by adjustment period. Failed
-    runs (e.g. no data for a country) and, for the binding target, runs where the debt sustainability safeguard cannot
-    be met (feasible) are left out.
+    Main table: change of the SPB relative to the baseline by check variant, mean across countries, largest change in
+    absolute terms and its country (pp. of GDP), for the three tiers (TIERS): own criterion (if add_own_criterion was
+    applied), DSA target and binding target, by adjustment period. Failed runs (e.g. no data for a country) and, for
+    the binding target, runs where the debt sustainability safeguard cannot be met (feasible) are left out.
     """
     d = df[~df['group'].isin(exclude_groups)]
     cols = {}
@@ -1251,27 +1303,26 @@ def effects_table(df, adjustment_periods=(4, 7), exclude_groups=('Baseline', 'No
         for target, (label, col) in TIERS.items():
             if col not in dn:  # own criterion only after add_own_criterion
                 continue
-            g = feasible(dn, target).groupby(['group', 'check', 'variant'], sort=False)[col]
-            for stat in ['mean', 'min', 'max']:
-                cols[(f'{n}-year adjustment', label, stat)] = g.agg(stat)
-            cols[(f'{n}-year adjustment', label, f'countries > {threshold:g} pp.')] = g.agg(
-                lambda x: int((x.abs() > threshold + 1e-9).sum()))
+            g = feasible(dn, target).set_index('country').groupby(['group', 'check', 'variant'], sort=False)[col]
+            cols[(f'{n}-year adjustment', label, 'mean')] = g.mean()
+            cols[(f'{n}-year adjustment', label, 'largest')] = g.agg(_largest)
+            cols[(f'{n}-year adjustment', label, 'country')] = g.agg(_largest_country)
     out = pd.DataFrame(cols)
     out.columns.names = ['adjustment', 'target', 'statistic']
     return out
 
 
-# Accommodative and restrictive combinations: 25th and 75th percentile of the draws, the middle half of the outcomes
-# (the individual checks use the 25th and 75th percentiles of each input). The joint draws come from the full
-# distribution of past errors, whose tails (e.g. the 2006-2008 boom-bust vintages) would dominate outer percentiles.
-COMBINATIONS = {'draws:accommodative': ('accommodative', 0.25), 'draws:restrictive': ('restrictive', 0.75)}
+# Favourable and adverse combinations: 25th and 75th percentile of the joint draws, the middle half of the
+# outcomes. The joint draws come from the full distribution of past errors, whose tails (e.g. the 2006-2008 boom-bust
+# vintages) would dominate outer percentiles.
+COMBINATIONS = {'draws:favourable': ('favourable', 0.25), 'draws:adverse': ('adverse', 0.75)}
 
 
 def draw_combinations(glob, combinations=COMBINATIONS):
     """
-    Accommodative and restrictive combinations of assumptions from the global draws (after add_deviations): for each
-    country, adjustment period and target, the 10th and 90th percentile of the target across draws (COMBINATIONS). The draws are a sample,
-    so percentiles do not depend on single extreme combinations as the lowest and highest draw would. Returns runs in the
+    Favourable and adverse combinations of assumptions from the joint draws (after add_deviations): for each
+    country, adjustment period and target, the lower and upper percentile of the target across draws (COMBINATIONS).
+    Percentiles do not depend on single extreme combinations as the lowest and highest draw would. Returns runs in the
     format of run_specs (group 'Global draws') with the percentile of the target and of its change, and the annual
     adjustment, binding criterion, debt path and id ('<target>_draw') of the draw whose target is closest to the
     percentile.
@@ -1295,96 +1346,6 @@ def draw_combinations(glob, combinations=COMBINATIONS):
                 row[f'{key}_draw'] = d.loc[i, 'id']
             rows.append(row)
     return pd.DataFrame(rows)
-
-
-def variance_decomposition(df, target='dsa', assumptions=GLOBAL_ASSUMPTIONS, categories=GLOBAL_CATEGORIES):
-    """
-    Variance decomposition of the global sensitivity analysis by country and adjustment period: squared standardised
-    regression coefficients of a linear regression of the target on the drawn assumptions (share of the variance of the
-    target explained by each assumption), rescaled to add up to the R2 of the regression (the draws are close to, but
-    not exactly, uncorrelated, so the raw squared coefficients can add up to more than R2), summed by category. Continuous
-    assumptions and discrete settings with numeric values (e.g. ageing cost period, probability threshold) enter
-    linearly, on/off settings as 0/1 indicators; categorical settings (string values) enter as dummies, whose shares
-    are added up. The remainder (1 - R2) is the variance from non-linear effects and interactions, e.g. switches of the
-    binding criterion. For the binding target, runs where the debt sustainability safeguard cannot be met are left out
-    (feasible).
-    """
-    y = TARGETS[target]['target']
-    rows = []
-    for (c, n), g in feasible(df, target).dropna(subset=[y]).groupby(['country', 'adjustment_period']):
-        X, owner = _design(g, assumptions)
-        res = _shares(X, g[y].to_numpy(float), owner, assumptions)
-        if res is None:
-            continue
-        shares, r2, std = res
-        shares = pd.Series(shares, index=assumptions)
-        row = {'country': c, 'adjustment_period': n, 'target': target, 'std': std, 'r2': r2}
-        row.update({k: shares[v].sum() for k, v in categories.items()})
-        row['Non-linear and interactions'] = max(0.0, 1 - r2)
-        row.update({f'src2_{k}': v for k, v in shares.items()})
-        rows.append(row)
-    return pd.DataFrame(rows)
-
-
-def _design(g, assumptions):
-    """
-    Regressors of the variance decomposition: drawn assumptions, numeric settings linearly, categorical settings as
-    dummies. Returns (X, owner), owner the assumption of each column.
-    """
-    parts, owner = [], []
-    for a in assumptions:
-        x = g[a]
-        if x.dtype == object:
-            dummies = pd.get_dummies(x.astype(str), drop_first=True, dtype=float)
-            parts.append(dummies.to_numpy())
-            owner += [a] * dummies.shape[1]
-        else:
-            parts.append(x.to_numpy(float)[:, None])
-            owner.append(a)
-    return np.column_stack(parts), owner
-
-
-def _shares(X, Y, owner, assumptions):
-    """
-    Squared standardised regression coefficients summed by assumption (array in the order of assumptions) and rescaled
-    to add up to R2, R2 and the standard deviation of the target; None if the target does not vary or there are too few
-    runs.
-    """
-    keep = X.std(0) > 0
-    X, owner = X[:, keep], [o for o, k in zip(owner, keep) if k]
-    if len(Y) <= X.shape[1] + 1 or Y.std() < 1e-10:
-        return None
-    Xs = np.column_stack([np.ones(len(Y)), (X - X.mean(0)) / X.std(0)])
-    coef = np.linalg.lstsq(Xs, Y, rcond=None)[0]
-    pos = {a: i for i, a in enumerate(assumptions)}
-    shares = np.zeros(len(assumptions))
-    np.add.at(shares, [pos[o] for o in owner], coef[1:] ** 2 / Y.var())
-    r2 = 1 - np.var(Y - Xs @ coef) / Y.var()
-    if shares.sum() > 0:
-        shares *= r2 / shares.sum()
-    return shares, r2, Y.std()
-
-
-def variance_table(vd, assumptions=GLOBAL_ASSUMPTIONS, categories=GLOBAL_CATEGORIES):
-    """
-    Variance decomposition of the global sensitivity analysis aggregated over countries (variance_decomposition):
-    share of the variance of the target explained by each assumption and category of assumptions, and by non-linear
-    effects and interactions, by adjustment period and target. Countries are weighted by the variance of their target,
-    so the shares refer to the variance summed over countries (countries whose target hardly moves count little).
-    The last row is the mean standard deviation of the target across countries.
-    """
-    names = {a: assumption_label(a) for a in assumptions}
-    cols = {}
-    for (n, target), g in vd.groupby(['adjustment_period', 'target'], sort=False):
-        w = g['std'] ** 2 / (g['std'] ** 2).sum()
-        s = {}
-        for category, members in categories.items():
-            s[(category, 'Total')] = (g[category] * w).sum()
-            s.update({(category, names[a]): (g[f'src2_{a}'] * w).sum() for a in members})
-        s[('Non-linear and interactions', '')] = (g['Non-linear and interactions'] * w).sum()
-        s[('Standard deviation of the target (pp.)', '')] = g['std'].mean()
-        cols[(f'{n}-year adjustment', TARGET_LABELS[target])] = pd.Series(s)
-    return pd.DataFrame(cols)
 
 
 # ========================================================================================= #
@@ -1432,80 +1393,71 @@ def plot_mean_effects(df, adjustment_periods=(4, 7), exclude_groups=('Baseline',
     return fig
 
 
-def plot_ranges(df, adjustment_period, target='dsa', combinations=tuple(COMBINATIONS),
-                exclude_groups=('Noise', 'Global'), exclude_ids=('data:latest',), figsize=(14, 5.5)):
+def plot_ranges(draws, oat, adjustment_period=4, target='dsa', figsize=(14, 5.5)):
     """
-    SPB targets by country (ordered by the baseline target): range across the individual checks of model assumptions
-    (grey bar; data revisions excluded), baseline, accommodative and restrictive combinations of the global draws
-    (10th and 90th percentile, draw_combinations), Commission target and SPB in T.
+    SPB targets by country (ordered by debt in T) across the joint draws: boxes from the 25th to the 75th percentile
+    (COMBINATIONS), line at the median, whiskers from the 10th to the 90th percentile; baseline target and SPB in T. For
+    the binding target, draws in which the debt sustainability safeguard cannot be met are left out.
     """
-    cols = TARGETS[target]
-    d = df[df['adjustment_period'] == adjustment_period]
-    countries = _order_countries(d, adjustment_period, target)
-    oat = d[~d['group'].isin(exclude_groups + ('Global draws',)) & ~d['id'].isin(exclude_ids)]
-    rng = oat.groupby('country')[cols['target']].agg(['min', 'max']).reindex(countries)
-    base = d[d['id'] == 'baseline'].set_index('country').reindex(countries)
+    col = TARGETS[target]['target']
+    base = oat[(oat['id'] == 'baseline') & (oat['adjustment_period'] == adjustment_period)].set_index('country')
+    d = feasible(draws[(draws['group'] == 'Global') & (draws['adjustment_period'] == adjustment_period)], target)
+    countries = [c for c in base.sort_values('debt_T', ascending=False).index if c in set(d['country'])]
+    q_lo, q_hi = COMBINATIONS['draws:favourable'][1], COMBINATIONS['draws:adverse'][1]
+    stats = []
+    for c in countries:
+        p10, lo, med, hi, p90 = np.percentile(d.loc[d['country'] == c, col].dropna(), [10, q_lo * 100, 50, q_hi * 100, 90])
+        stats.append({'med': med, 'q1': lo, 'q3': hi, 'whislo': p10, 'whishi': p90, 'fliers': [], 'label': c})
     x = np.arange(len(countries))
     fig, ax = plt.subplots(figsize=figsize)
-    ax.bar(x, rng['max'] - rng['min'], bottom=rng['min'], width=0.6, color=LIGHT_GREY, zorder=1,
-           label='Range of individual checks')
-    ax.scatter(x, base['spb_T'], marker='_', s=180, lw=2, color=CURRENT, zorder=2, label='SPB in T')
-    if cols['commission'] in base and base[cols['commission']].notna().any():
-        ax.scatter(x, base[cols['commission']], marker='D', s=30, facecolor='none', edgecolor=COMMISSION, lw=1.4,
-                   zorder=3, label='Commission')
-    (lo, q_lo), (hi, q_hi) = COMBINATIONS[combinations[0]], COMBINATIONS[combinations[1]]
-    for bid, color, label, marker in [(combinations[0], ACCOMMODATIVE, f'Accommodative ({q_lo * 100:.0f}th pct. of draws)', 'v'),
-                                      (combinations[1], RESTRICTIVE, f'Restrictive ({q_hi * 100:.0f}th pct. of draws)', '^')]:
-        b = d[d['id'] == bid].set_index('country').reindex(countries)
-        if b[cols['target']].notna().any():
-            ax.scatter(x, b[cols['target']], marker=marker, s=40, color=color, zorder=4, label=label)
-    ax.scatter(x, base[cols['target']], marker='o', s=36, color=BASELINE, zorder=5, label='Baseline')
+    ax.bxp(stats, positions=x, widths=0.6, patch_artist=True, showfliers=False,
+           boxprops={'facecolor': BAND, 'alpha': 0.45, 'lw': 0}, medianprops={'color': BAND, 'lw': 1.5},
+           whiskerprops={'color': BAND}, capprops={'color': BAND})
+    ax.scatter(x, base.loc[countries, 'spb_T'], marker='_', s=180, lw=2, color=CURRENT, zorder=3)
+    ax.scatter(x, base.loc[countries, col], marker='o', s=30, color=BASELINE, zorder=4)
     ax.set_xticks(x, countries)
     ax.set_xlim(-0.6, len(countries) - 0.4)
     ax.grid(axis='x', visible=False)
     ax.set_ylabel('SPB at the end of the adjustment period (% of GDP)')
     ax.set_title(f"{TARGET_LABELS[target]}, {adjustment_period}-year adjustment", loc='left')
-    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.08), ncol=3, frameon=False)
+    handles = [Patch(color=BAND, alpha=0.45, lw=0, label=f'{q_lo * 100:.0f}th to {q_hi * 100:.0f}th percentile of draws'),
+               Line2D([], [], color=BAND, label='10th to 90th percentile'),
+               Line2D([], [], marker='o', ls='', color=BASELINE, label='Baseline'),
+               Line2D([], [], marker='_', ms=12, mew=2, ls='', color=CURRENT, label='SPB in T')]
+    ax.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, -0.08), ncol=4, frameon=False)
     plt.tight_layout()
     return fig
 
 
-def plot_debt_paths(df, adjustment_period=4, target='dsa', countries=None, ncols=5,
-                    exclude_groups=('Baseline', 'Noise', 'Global', 'Global draws'), exclude_ids=('data:latest',)):
+def plot_debt_paths(fixed, oat, adjustment_period=4, countries=None, ncols=5):
     """
-    Debt by country (one panel each) under a linear adjustment to the target of each run: baseline and the accommodative
-    and restrictive combinations of the global draws (draws closest to the 10th and 90th percentile of the target), with
-    the range across the
-    individual checks of model assumptions (grey; data revisions excluded).
+    Debt by country (one panel each, ordered by debt in T) when the SPB follows the path of the baseline binding target
+    in all joint draws (fixed_path_runs): 10th to 90th and 25th to 75th percentiles of debt in each year across the
+    draws (fan chart) and the baseline path.
     """
-    col = TARGETS[target]['debt_path']
-    d = df[(df['adjustment_period'] == adjustment_period) & df[col].notna()]
-    countries = countries or list(dict.fromkeys(d['country']))
-    lines = [('baseline', 'Baseline', BASELINE),
-             ('draws:accommodative', f"Accommodative ({COMBINATIONS['draws:accommodative'][1] * 100:.0f}th pct. of draws)", ACCOMMODATIVE),
-             ('draws:restrictive', f"Restrictive ({COMBINATIONS['draws:restrictive'][1] * 100:.0f}th pct. of draws)", RESTRICTIVE)]
+    base = oat[(oat['id'] == 'baseline') & (oat['adjustment_period'] == adjustment_period)].set_index('country')
+    draws = fixed[(fixed['id'] != 'baseline') & fixed['debt_path'].notna()]
+    countries = countries or [c for c in base.sort_values('debt_T', ascending=False).index if c in set(draws['country'])]
     nrows = int(np.ceil(len(countries) / ncols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(3.2 * ncols, 2.3 * nrows + 0.8), squeeze=False)
     for ax, c in zip(axes.ravel(), countries):
-        dc = d[d['country'] == c]
-        T = dc.loc[dc['id'] == 'baseline', 'T'].iloc[0]
-        oat = dc[~dc['group'].isin(exclude_groups) & ~dc['id'].isin(exclude_ids) & (dc['T'] == T)]
-        paths = pd.DataFrame({i: pd.Series(p) for i, p in zip(oat['id'], oat[col])}).sort_index()
-        ax.fill_between(paths.index, paths.min(axis=1), paths.max(axis=1), color=LIGHT_GREY, lw=0)
-        for i, label, color in lines:
-            r = dc[dc['id'] == i]
-            if len(r):
-                p = pd.Series(r[col].iloc[0]).sort_index()
-                ax.plot(p.index, p.values, color=color, lw=1.5, label=label)
+        dc = draws[draws['country'] == c]
+        paths = pd.DataFrame({i: pd.Series(p) for i, p in zip(dc['id'], dc['debt_path'])}).sort_index()
+        q = paths.quantile([0.1, 0.25, 0.75, 0.9], axis=1).T
+        ax.fill_between(q.index, q[0.1], q[0.9], color=BAND, alpha=0.2, lw=0)
+        ax.fill_between(q.index, q[0.25], q[0.75], color=BAND, alpha=0.45, lw=0)
+        b = pd.Series(base.loc[c, 'debt_path']).sort_index()
+        ax.plot(b.index, b.values, color=BASELINE, lw=1.5)
         ax.set_title(c, fontsize=10)
         ax.tick_params(labelsize=8)
         ax.xaxis.set_major_locator(plt.MaxNLocator(nbins=4, integer=True))
     for ax in axes.ravel()[len(countries):]:
         ax.set_visible(False)
-    handles = [Patch(color=LIGHT_GREY, label='Range of individual checks')]
-    handles += [Line2D([], [], color=color, lw=1.5, label=label) for _, label, color in lines]
-    fig.legend(handles=handles, loc='lower center', ncol=4, frameon=False)
-    fig.suptitle(f"Debt (% of GDP) under an adjustment to the SPB target ({TARGET_LABELS[target]}), "
-                 f"{adjustment_period}-year adjustment", fontweight='bold')
+    handles = [Patch(color=BAND, alpha=0.2, lw=0, label='10th to 90th percentile of draws'),
+               Patch(color=BAND, alpha=0.45, lw=0, label='25th to 75th percentile'),
+               Line2D([], [], color=BASELINE, lw=1.5, label='Baseline')]
+    fig.legend(handles=handles, loc='lower center', ncol=3, frameon=False)
+    fig.suptitle(f'Debt (% of GDP) under the baseline SPB path, joint draws, {adjustment_period}-year adjustment',
+                 fontweight='bold')
     fig.tight_layout(rect=(0, 0.5 / fig.get_figheight(), 1, 1))
     return fig
