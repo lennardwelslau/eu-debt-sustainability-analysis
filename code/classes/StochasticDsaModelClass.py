@@ -9,8 +9,8 @@
 # 1. Simulation methods: draw quarterly or annual shocks (joint normal or VAR), aggregate them to
 #    annual shocks, combine them with the baseline and simulate the debt ratio.
 # 2. Auxiliary methods: fan charts and shock plots.
-# 3. Stochastic optimization: SPB target such that debt declines (or stays below 60%) with a given
-#    probability.
+# 3. Stochastic optimization: smallest SPB target such that debt declines (or stays below 60%) with a
+#    given probability (bisection on fixed shocks).
 # 4. Probability of an excessive deficit and conditional primary balance forecasts.
 # 5. Numba functions that speed up the simulations.
 #
@@ -19,14 +19,14 @@
 # For comments and suggestions please contact lennard.welslau[at]gmail[dot]com
 #
 # Author: Lennard Welslau
-# Updated: 2026-09-29
+# Updated: 2026-10-19
 # ========================================================================================= #
 
 # Import libraries and modules
+import warnings
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.optimize import minimize_scalar
 from statsmodels.tsa.api import VAR
 from numba import jit
 from classes import DsaModel
@@ -116,9 +116,19 @@ class StochasticDsaModel(FiscalRules, DsaModel):
         elif shock_frequency == 'annual':
             self.draw_period = stochastic_period
         self.winsorize_sample = winsorize_sample
+        self._check_stochastic_period()
 
         # Get shock data
         self._get_shock_data()
+
+    def _check_stochastic_period(self):
+        """
+        Check that the stochastic projection starts after the start year and ends within the projection period.
+        """
+        if not 0 < self.stochastic_start <= self.stochastic_end < self.projection_period:
+            raise ValueError(f'Stochastic projection {self.start_year + self.stochastic_start}-'
+                             f'{self.start_year + self.stochastic_end} must start after the start year ({self.start_year}) '
+                             f'and end by the end year ({self.end_year}).')
 
     def _get_shock_data(self):
         """
@@ -166,8 +176,9 @@ class StochasticDsaModel(FiscalRules, DsaModel):
         """
         Simulate the stochastic model.
         """
-        # Set number of simulations
+        # Set number of simulations, check stochastic period (can be changed after initialization)
         self.N = N
+        self._check_stochastic_period()
 
         # Draw shocks from a multivariate normal distribution or VAR model
         if self.estimation == 'normal':
@@ -551,13 +562,17 @@ class StochasticDsaModel(FiscalRules, DsaModel):
                             stochastic_criteria=None,
                             stochastic_criterion_start_year=None,
                             print_update=False,
-                            prob_target=None):
+                            prob_target=None,
+                            tol=0.0001):
         """
-        Find the SPB target such that the debt ratio declines (or stays below 60%) with probability prob_target (default 0.7).
+        Find the smallest SPB target such that the debt ratio declines (or stays below 60%) with at least probability
+        prob_target (default 0.7). With several criteria, one of them has to be met. The search details are stored in
+        stochastic_result; if the criterion is not met at the upper bound, the upper bound is used with a warning.
         """
         # Set parameters
         self.print_update = print_update
         self.stochastic_criteria = stochastic_criteria or ['debt_declines', 'debt_below_60']
+        self.stochastic_result = None
 
         if not hasattr(self, 'edp_steps'):
            self.edp_steps = None
@@ -579,6 +594,10 @@ class StochasticDsaModel(FiscalRules, DsaModel):
             self.stochastic_criterion_start = 0
         else:
             self.stochastic_criterion_start = stochastic_criterion_start_year - self.stochastic_start_year
+            if not 0 <= self.stochastic_criterion_start < self.stochastic_period:
+                raise ValueError(f'stochastic_criterion_start_year ({stochastic_criterion_start_year}) must lie within '
+                                 f'the stochastic projection ({self.stochastic_start_year}-'
+                                 f'{self.stochastic_start_year + self.stochastic_period - 1}).')
 
         self.stochastic_optimization_dict = {}
 
@@ -590,8 +609,8 @@ class StochasticDsaModel(FiscalRules, DsaModel):
             scenario=None
             )
 
-        # Optimize for both debt decline and debt remaining under 60 and choose the lower SPB
-        self.spb_target = self._stochastic_optimization(bounds=bounds)
+        # Smallest SPB target that meets the stochastic criterion
+        self.spb_target = self._stochastic_optimization(bounds=bounds, tol=tol)
 
         # Project with optimal spb
         self.project(
@@ -602,11 +621,12 @@ class StochasticDsaModel(FiscalRules, DsaModel):
             scenario=None
             )
 
-        return self.spb_target
+        return self.spb_bca[self.adjustment_end]
 
-    def _stochastic_optimization(self, bounds):
+    def _stochastic_optimization(self, bounds, tol):
         """
-        Optimizes for SPB that ensures debt remains below 60% with probability prob_target.
+        Bisection for the smallest SPB target that meets the stochastic criterion. Shocks are drawn once and reused for
+        every candidate target, so that the probabilities increase monotonically with the target.
         """
         # Initital simulation
         self.simulate()
@@ -614,18 +634,51 @@ class StochasticDsaModel(FiscalRules, DsaModel):
         # Set parameters
         self.spb_bounds = bounds
         self.stochastic_optimization_dict = {}
+        low, high = bounds
+        iterations = 0
 
-        # Optimize _target_pb to find b_target that ensures prob_debt_below_60 or prob_debt_declines == prob_target
-        self.spb_target = minimize_scalar(self._stochastic_target, method='bounded', bounds=self.spb_bounds).x
+        # Check bounds: lower bound if the criterion is met there, upper bound with a warning if it is not met there
+        if self._stochastic_condition(low):
+            spb_target, status = low, 'lower_bound'
+        elif not self._stochastic_condition(high):
+            spb_target, status = high, 'upper_bound'
+            warnings.warn(f'{self.country}: stochastic criterion not met at upper bound ({high:.2f}), upper bound used')
 
-        # Store results in a dataframe
-        self.df_stochastic_optimization = pd.DataFrame(self.stochastic_optimization_dict).T
+        # Bisection loop
+        else:
+            spb_target, status = high, 'converged'
+            while (high - low) > tol:
+                mid = (low + high) / 2
+                if self._stochastic_condition(mid):
+                    spb_target = high = mid
+                else:
+                    low = mid
+                iterations += 1
 
-        return self.spb_target
+        # Store evaluated targets in a dataframe and the search result in a dictionary
+        self.df_stochastic_optimization = pd.DataFrame(self.stochastic_optimization_dict).T.sort_index()
+        self.stochastic_result = {
+            'spb_target': spb_target,
+            'status': status,
+            'probs': dict(self.stochastic_optimization_dict[spb_target]),
+            'prob_target': self.prob_target,
+            'criteria': list(self.stochastic_criteria),
+            'bounds': tuple(bounds),
+            'iterations': iterations,
+            'N': self.N,
+        }
 
-    def _stochastic_target(self, spb_target):
+        return spb_target
+
+    def _stochastic_condition(self, spb_target):
         """
-        Returns zero if primary balance ensures prop_debt_declines == prob_target or prob_debt_below_60 == prob_target.
+        True if at least one stochastic criterion is met with probability prob_target.
+        """
+        return max(self._stochastic_probs(spb_target).values()) >= self.prob_target
+
+    def _stochastic_probs(self, spb_target):
+        """
+        Project and simulate the debt ratio for an SPB target and return the probability of each stochastic criterion.
         """
         # Simulate the debt-to-GDP ratio with the given primary balance target
         self.project(
@@ -639,46 +692,23 @@ class StochasticDsaModel(FiscalRules, DsaModel):
         # Combine shocks with new baseline
         self._combine_shocks_baseline()
 
-        # Simulate debt ratio and calculate probability of debt exploding or exceeding 60
+        # Simulate debt ratio and calculate probability of debt declining, stabilizing or remaining below 60
         self._simulate_debt()
-        self.stochastic_optimization_dict[spb_target] = {}
-        print_msg = f'spb: {spb_target:.2f}'
+        unknown = set(self.stochastic_criteria) - {'debt_declines', 'debt_stable', 'debt_below_60'}
+        if unknown or not self.stochastic_criteria:
+            raise ValueError(f'Unknown stochastic criteria: {self.stochastic_criteria}')
+        probs = {}
         if 'debt_declines' in self.stochastic_criteria:
-            self.prob_debt_declines()
-            self.stochastic_optimization_dict[spb_target]['prob_debt_declines'] = self.prob_declines
-            print_msg += f', prob_debt_declines: {self.prob_declines:.2f}'
+            probs['prob_debt_declines'] = self.prob_debt_declines()
         if 'debt_stable' in self.stochastic_criteria:
-            self.prob_debt_stable()
-            self.stochastic_optimization_dict[spb_target]['prob_debt_stable'] = self.prob_stable
-            print_msg += f', prob_debt_stable: {self.prob_stable:.2f}'
+            probs['prob_debt_stable'] = self.prob_debt_stable()
         if 'debt_below_60' in self.stochastic_criteria:
-            self.prob_debt_below_60()
-            self.stochastic_optimization_dict[spb_target]['prob_debt_below_60'] = self.prob_below_60
-            print_msg += f', prob_debt_below_60: {self.prob_below_60:.2f}'
+            probs['prob_debt_below_60'] = self.prob_debt_below_60()
+        self.stochastic_optimization_dict[spb_target] = probs
         if self.print_update:
-            print(print_msg, end='\r')
+            print(f'spb: {spb_target:.2f}, ' + ', '.join(f'{k}: {v:.2f}' for k, v in probs.items()), end='\r')
 
-        # Optimize for more probable target
-        if 'debt_declines' in self.stochastic_criteria and 'debt_below_60' in self.stochastic_criteria:
-            max_prob = np.max([self.prob_declines, self.prob_below_60])
-        elif 'debt_stable' in self.stochastic_criteria and 'debt_below_60' in self.stochastic_criteria:
-            max_prob = np.max([self.prob_stable, self.prob_below_60])
-        elif 'debt_declines' in self.stochastic_criteria:
-            max_prob = self.prob_declines
-        elif 'debt_stable' in self.stochastic_criteria:
-            max_prob = self.prob_stable
-        elif 'debt_below_60' in self.stochastic_criteria:
-            max_prob = self.prob_below_60
-        else:
-            raise ValueError('Unknown stochastic criteria or combination!')
-
-        # Penalty term to avoid local minima at probability bounds
-        if (np.isclose(max_prob, 0)) or (np.isclose(max_prob, 1)):
-            penalty = np.max([0,spb_target/10])
-        else:
-            penalty = 0
-
-        return np.abs(max_prob - self.prob_target) + penalty
+        return probs
 
     def prob_debt_declines(self):
         """
@@ -716,14 +746,23 @@ class StochasticDsaModel(FiscalRules, DsaModel):
 
     def plot_target_func(self):
         """
-        Plot the target function for the stochastic optimization.
+        Plot the probability of each stochastic criterion over the SPB target bounds of the last optimization (same
+        shocks), with the probability target and the solution. The solution is projected again afterwards.
         """
-        results = {}
-        for x in np.linspace(self.spb_bounds[0], self.spb_bounds[1], 100):
-            y = self._stochastic_target(spb_target=x)
-            results[x] = y
-        results = pd.Series(results)
-        results.plot()
+        spb_target = self.stochastic_result['spb_target']
+        optimization_dict = dict(self.stochastic_optimization_dict)
+        results = {x: self._stochastic_probs(x) for x in np.linspace(self.spb_bounds[0], self.spb_bounds[1], 100)}
+        ax = pd.DataFrame(results).T.plot()
+        ax.axhline(self.prob_target, color='black', ls='--', lw=1, label='prob_target')
+        ax.axvline(spb_target, color='black', ls=':', lw=1, label='SPB target')
+        ax.set_xlabel('SPB target')
+        ax.set_ylabel('Probability')
+        ax.legend()
+        plt.show()
+
+        # Restore the solution
+        self._stochastic_probs(spb_target)
+        self.stochastic_optimization_dict = optimization_dict
 
 # ========================================================================================= #
 #                               DEFICIT PROBABILITY AND FORECASTS                           #
@@ -990,17 +1029,16 @@ def prob_debt_declines_jit(N, d_sim, stochastic_criterion_start):
 @jit(nopython=True)
 def prob_debt_stable_jit(N, d_sim):
     """
-    Calculate the probability of the debt-to-GDP ratio stabalizing by projection end.
+    Calculate the probability of the debt-to-GDP ratio stabilizing by projection end: the share of percentiles of the
+    simulated debt distribution that do not increase between T-2 and the last year T of the stochastic projection.
     """
-    d_penultimate_sorted = np.sort(d_sim[:, -5])
+    d_penultimate_sorted = np.sort(d_sim[:, -3])
     d_last_sorted = np.sort(d_sim[:, -1])
-    n = d_sim.shape[0]
     prob_debt_stable = 0
-    for i in range(10000):
-        idx = int((i / 10000) * (n - 1))
-        if d_penultimate_sorted[idx] >= d_last_sorted[idx]:
+    for i in range(N):
+        if d_penultimate_sorted[i] >= d_last_sorted[i]:
             prob_debt_stable += 1
-    return prob_debt_stable / 10000
+    return prob_debt_stable / N
 
 @jit(nopython=True)
 def prob_debt_below_60_jit(N, d_sim):

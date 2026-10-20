@@ -19,7 +19,7 @@
 # For comments and suggestions please contact lennard.welslau[at]gmail[dot]com
 #
 # Author: Lennard Welslau
-# Updated: 2026-09-29
+# Updated: 2026-10-19
 #
 # ========================================================================================= #
 
@@ -83,6 +83,9 @@ class DsaModel:
         self.adjustment_start = self.adjustment_start_year - self.start_year  # start (T+x) of adjustment period
         self.adjustment_end_year = self.adjustment_start_year + self.adjustment_period - 1  # end year of adjustment period
         self.adjustment_end = self.adjustment_end_year - self.start_year  # end (T+x) of adjustment period
+        if not self.start_year < self.adjustment_start_year <= self.adjustment_end_year < self.end_year:
+            raise ValueError(f'Adjustment period {self.adjustment_start_year}-{self.adjustment_end_year} must start after '
+                             f'the start year ({self.start_year}) and end before the end year ({self.end_year}).')
         self.ageing_cost_period = ageing_cost_period  # number of years during which ageing costs must be accounted for by SPB adjustment
         self.fiscal_multiplier = fiscal_multiplier  # fiscal multiplier for fiscal adjustment
         self.fiscal_multiplier_persistence = fiscal_multiplier_persistence  # persistence of fiscal multiplier
@@ -160,6 +163,7 @@ class DsaModel:
             'cyclical_component',        # cyclical component of primary balance
             'SF',                        # stock-flow adjustment
             'sf',                        # stock-flow adjustment over GDP
+            'SF_exr',                    # exchange rate valuation of foreign currency debt
             'D',                         # total debt
             'D_lt',                      # total long-term debt
             'D_new_lt',                  # new long-term debt
@@ -364,6 +368,11 @@ class DsaModel:
         self.D_share_domestic = np.round(self.params['DEBT_DOMESTIC_SHARE'], 4)
         self.D_share_eur = np.round(self.params['DEBT_EUR_SHARE'], 4)
         self.D_share_usd = np.round(1 - self.D_share_domestic - self.D_share_eur, 4)
+        if self.D_share_usd < 0 and self.D_share_usd > -1e-3:  # rounding of the input shares
+            self.D_share_usd = 0.0
+        if not all(0 <= s <= 1 for s in (self.D_share_domestic, self.D_share_eur, self.D_share_usd)):
+            raise ValueError(f'Invalid currency shares of debt for {self.country}: domestic {self.D_share_domestic}, '
+                             f'euro {self.D_share_eur}, implied usd {self.D_share_usd}. Check DEBT_DOMESTIC_SHARE and DEBT_EUR_SHARE.')
 
         # Set initial values for long and short-term debt
         self.D_st[0] = self.D_share_st * self.D[0]
@@ -473,9 +482,6 @@ class DsaModel:
         # Set initial values to baseline
         self.iir = np.copy(self.iir_bl)
 
-        # Initial lt baseline
-        self.iir_lt[0] = self.iir[0] * (1 - self.D_share_st)
-
     def _clean_market_rates(self):
         """
         Clean benchmark and forward market rates. Interpolate missing values.
@@ -506,6 +512,16 @@ class DsaModel:
         # Set initial values to baseline
         self.i_st = np.copy(self.i_st_bl)
         self.i_lt = np.copy(self.i_lt_bl)
+
+        # Initial long-term implicit interest rate
+        self._init_iir_lt()
+
+    def _init_iir_lt(self):
+        """
+        Long-term implicit interest rate in the start year, backed out from the implicit interest rate and the
+        short-term market rate on short-term debt.
+        """
+        self.iir_lt[0] = (self.iir[0] - self.D_share_st * self.i_st[0]) / (1 - self.D_share_st)
 
     def _clean_stock_flow(self):
         """
@@ -595,7 +611,7 @@ class DsaModel:
         # Reset starting values for debt issuance and implicit interest rate
         self.D_new_lt = np.full(self.projection_period, 0, dtype=np.float64)
         self.iir = np.copy(self.iir_bl)
-        self.iir_lt[0] = self.iir[0] * (1 - self.D_share_st)
+        self._init_iir_lt()
 
     def _set_adjustment(self, spb_target, spb_steps, edp_steps, deficit_resilience_steps, post_spb_steps):
         """
@@ -981,6 +997,10 @@ class DsaModel:
         self.alpha[t - 1] = self.D_st[t - 1] / self.D[t - 1]
         self.beta[t - 1] = self.D_new_lt[t - 1] / self.D_lt[t - 1]
 
+        # Issuance is projected from T+1: in the start year, new long-term debt replaces maturing market debt
+        if t == 1:
+            self.beta[0] = self.D_share_lt_maturing[0] * np.max([self.D_lt[0] - self.D_lt_esm[0], 0]) / self.D_lt[0]
+
         # Use forecast implicit interest rate where available and derive iir_lt
         if t <= self.last_data and not np.isnan(self.iir_bl[t]):
             self.iir_lt[t] = (self.iir[t] - self.alpha[t - 1] * self.i_st[t]) / (1 - self.alpha[t - 1])
@@ -991,10 +1011,13 @@ class DsaModel:
             self.iir_lt[t] = self.beta[t - 1] * self.i_lt[t] + (1 - self.beta[t - 1]) * self.iir_lt[t - 1]
             self.iir[t] = self.alpha[t - 1] * self.i_st[t] + (1 - self.alpha[t - 1]) * self.iir_lt[t] + self.iir_adjustment[t]
 
-        # Replace all 10 < iir < 0 with previous period value to avoid implausible values
-        for iir in [self.iir, self.iir_lt]:
-            if iir[t] < 0 or iir[t] > 10 or np.isnan(iir[t]):
+        # Replace missing values with previous period value, warn on implausible values
+        for name, iir in [('iir', self.iir), ('iir_lt', self.iir_lt)]:
+            if np.isnan(iir[t]):
                 iir[t] = iir[t - 1]
+            elif not -10 <= iir[t] <= 30:
+                warnings.warn(f'{self.country}: {name} outside [-10, 30]% in {self.start_year + t}, check interest rate inputs',
+                              UserWarning)
 
     def _calc_interest(self, t):
         """
@@ -1033,8 +1056,17 @@ class DsaModel:
         """
         Calculate new debt stock and distribution of new short and long-term issuance
         """
-        # Total debt stock is equal to last period stock minus repayment plus financing needs
-        self.D[t] = np.max([self.D[t - 1] - self.repayment[t] + self.GFN[t], 1e-8])  # floor to avoid division by zero
+        # Valuation effect of exchange rate changes on foreign currency debt and the interest paid on it, as in the debt
+        # ratio equation (_calc_debt_ratio), so that d = D / ngdp
+        fx_change = 0.0
+        if self.D_share_eur > 0:
+            fx_change += self.D_share_eur * (self.exr_eur[t] / self.exr_eur[t - 1] - 1)
+        if self.D_share_usd > 0:
+            fx_change += self.D_share_usd * (self.exr_usd[t] / self.exr_usd[t - 1] - 1)
+        self.SF_exr[t] = fx_change * (self.D[t - 1] + self.interest[t])
+
+        # Total debt stock is equal to last period stock minus repayment plus financing needs and valuation effect
+        self.D[t] = np.max([self.D[t - 1] - self.repayment[t] + self.GFN[t] + self.SF_exr[t], 1e-8])  # floor to avoid division by zero
 
         # Distribution of short-term and long-term debt in financing needs
         D_theoretical_issuance_st = self.D_share_st * self.D[t]  # st debt to keep share equal to D_share_st
@@ -1044,7 +1076,9 @@ class DsaModel:
         # Calculate short-term and long-term debt issuance
         self.D_st[t] = np.max([D_issuance_share_st * self.GFN[t], 1e-8])
         self.D_new_lt[t] = np.max([(1 - D_issuance_share_st) * self.GFN[t], 1e-8])
-        self.D_lt[t] = np.max([self.D_lt[t - 1] - self.repayment_lt[t] - self.repayment_lt_bond[t] - self.repayment_lt_esm[t] + self.D_new_lt[t] , 1e-8])
+        # Long-term debt is the remainder, so that D_st + D_lt = D: it absorbs the valuation effect and, with negative
+        # financing needs, the debt reduction (otherwise last year's stock minus repayments plus new issuance)
+        self.D_lt[t] = np.max([self.D[t] - self.D_st[t], 1e-8])
 
     def _calc_balance(self, t):
         """

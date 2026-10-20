@@ -553,7 +553,8 @@ class FiscalRules:
                 a[f'debt_below_60_{sc}'] = step(sc, 'below_60')
             if stochastic:
                 try:
-                    self.find_spb_stochastic(bounds=target_bounds, stochastic_criteria=self.rules['stochastic_criteria'])
+                    self.find_spb_stochastic(bounds=target_bounds, tol=n * tol,
+                                             stochastic_criteria=self.rules['stochastic_criteria'])
                     a['stochastic'] = (self.spb_target - spb_start) / n
                 except Exception as e:
                     warnings.warn(f'{self.country}: stochastic criterion skipped ({e})')

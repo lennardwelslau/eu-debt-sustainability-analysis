@@ -136,6 +136,7 @@ def build_countries(countries, sheets, reference_year=None, ogwg_file=None, mark
 # Debt structure parameters. Fallback order: ECB, Eurostat, Commission sheet; the maturing shares fall back to the EU
 # median where the Commission sheet value is implausible too (e.g. 0.001 for Luxembourg)
 DEBT_SHARES = ['DEBT_ST_SHARE', 'DEBT_LT_MATURING_SHARE', 'DEBT_LT_MATURING_AVG_SHARE']
+DEBT_CONSISTENCY_TOL = 0.05  # maximum gap between DEBT_RATIO and DEBT_TOTAL / NOMINAL_GDP (pp of GDP)
 MATURING = ['DEBT_LT_MATURING_SHARE', 'DEBT_LT_MATURING_AVG_SHARE']
 
 
@@ -199,6 +200,18 @@ def _build_country(c, T, L, am, ea_deflator, usd_per_eur, rates, debt, esm, awg_
     put('NOMINAL_GDP_GROWTH', am['NOMINAL_GDP'].pct_change() * 100, 'api', f'{ameco_src}: growth of {S.AMECO["NOMINAL_GDP"]}', fc)
     put('GDP_DEFLATOR_PCH', am['GDP_DEFLATOR'].pct_change() * 100, 'api', f'{ameco_src}: growth of {S.AMECO["GDP_DEFLATOR"]}', fc)
     put('EA_GDP_DEFLATOR_PCH', ea_deflator, 'api', f'{ameco_src}: EA20 GDP deflator growth', fc)
+
+    # Debt level consistent with the debt ratio and nominal GDP, so that the model's debt stock matches the debt ratio.
+    # The AMECO ratio can be based on another GDP vintage than AMECO nominal GDP (France from 2023); the ratio is kept
+    gap = 100 * out['DEBT_TOTAL'] / out['NOMINAL_GDP'] - out['DEBT_RATIO']
+    inconsistent = gap.abs() > DEBT_CONSISTENCY_TOL
+    if inconsistent.any():
+        years_fixed = f'{gap.index[inconsistent].min()}-{gap.index[inconsistent].max()}'
+        put('DEBT_TOTAL', (out['DEBT_RATIO'] * out['NOMINAL_GDP'] / 100)[inconsistent], 'derived',
+            f'{years_fixed}: DEBT_RATIO x NOMINAL_GDP (AMECO debt level / nominal GDP differs from the debt ratio by up to '
+            f'{gap.abs().max():.2f} pp)')
+        warnings.warn(f'{c}: AMECO debt level inconsistent with debt ratio and nominal GDP in {years_fixed} (up to '
+                      f'{gap.abs().max():.2f} pp of GDP); DEBT_TOTAL derived from DEBT_RATIO x NOMINAL_GDP')
 
     # Exchange rates: euro and US dollar per unit of national currency
     exr_eur = 1 / am['XNE']
