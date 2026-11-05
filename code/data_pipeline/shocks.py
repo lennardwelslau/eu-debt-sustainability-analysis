@@ -2,8 +2,9 @@
 #               European Commission Debt Sustainability Analysis - Stochastic Shock Data    #
 # ========================================================================================= #
 #
-# Historical series for the stochastic DSA (DSM Annex A4). Shocks are first differences of
-# quarterly (or annual) series of:
+# Historical series for the stochastic DSA (DSM Annex A4). The workbook stores the levels of
+# quarterly and annual series of the variables below; the model takes first differences to obtain
+# the shocks and winsorises them (or the levels before differencing):
 #
 #   EXR_EUR             euro per unit of national currency     Eurostat ert_bil_eur (1 for euro area)
 #   EXR_USD             US dollar per unit of national currency Eurostat ert_bil_eur (cross rate)
@@ -135,9 +136,8 @@ def fetch_shock_history(countries, freq='Q', start=1998):
 
 def build_shocks(countries, start=1998, verbose=True):
     """
-    Build historical levels and shocks (first differences) at quarterly and annual frequency.
-    Returns {'History_Q', 'History_A', 'Shocks_Q', 'Shocks_A'} as long DataFrames with
-    columns COUNTRY, PERIOD and the shock variables.
+    Build historical levels of the shock variables at quarterly and annual frequency.
+    Returns {'History_Q', 'History_A'} as long DataFrames with columns COUNTRY, PERIOD and the shock variables.
     """
     if verbose:
         print('Fetching historical data for stochastic shocks (Eurostat, OECD, ECB) ...')
@@ -160,23 +160,6 @@ def build_shocks(countries, start=1998, verbose=True):
         levels = pd.concat({v: data[v] for v in SHOCK_VARIABLES}, axis=1)
         long = levels.stack(level=1, future_stack=True).rename_axis(['PERIOD', 'COUNTRY']).reset_index()
         long = long[['COUNTRY', 'PERIOD'] + SHOCK_VARIABLES].sort_values(['COUNTRY', 'PERIOD'])
-        shocks = long.copy()
-        shocks[SHOCK_VARIABLES] = shocks.groupby('COUNTRY')[SHOCK_VARIABLES].diff()
-        shocks = shocks.dropna()
-        for df in (long, shocks):
-            df['PERIOD'] = df['PERIOD'].astype(str)
+        long['PERIOD'] = long['PERIOD'].astype(str)
         result[f'History_{freq}'] = long.dropna(how='all', subset=SHOCK_VARIABLES).reset_index(drop=True)
-        result[f'Shocks_{freq}'] = shocks.reset_index(drop=True)
     return result
-
-
-def legacy_shocks(quarterly_csv, annual_csv):
-    """
-    Read legacy stochastic_data_quarterly/annual CSV files (first differences) into the workbook format.
-    """
-    out = {}
-    for freq, path in [('Q', quarterly_csv), ('A', annual_csv)]:
-        df = pd.read_csv(path).rename(columns={'YEAR': 'PERIOD'})
-        df['PERIOD'] = df['PERIOD'].astype(str)
-        out[f'Shocks_{freq}'] = df[['COUNTRY', 'PERIOD'] + SHOCK_VARIABLES]
-    return out

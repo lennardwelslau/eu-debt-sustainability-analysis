@@ -6,7 +6,8 @@
 # deterministic debt path, with shocks to exchange rates, interest rates, nominal GDP growth and the
 # primary balance. It has five parts:
 #
-# 1. Simulation methods: draw quarterly or annual shocks (joint normal or VAR), aggregate them to
+# 1. Simulation methods: draw quarterly or annual shocks (joint normal, VAR or the Commission's AR
+#    pre-filter with bootstrapped residuals), aggregate them to
 #    annual shocks, combine them with the baseline and simulate the debt ratio.
 # 2. Auxiliary methods: fan charts and shock plots.
 # 3. Stochastic optimization: smallest SPB target such that debt declines (or stays below 60%) with a
@@ -32,7 +33,11 @@ from numba import jit
 from classes import DsaModel
 from classes.DsaModelClass import DEFAULT_INPUT_FILE
 from classes.FiscalRules import FiscalRules
-from data_pipeline import read_shocks
+from data_pipeline import read_history
+
+# Lag orders of the univariate AR(p) pre-filter for quarterly shocks (estimation='ar_bootstrap', DSM 2025 Annex A4)
+AR_LAGS_QUARTERLY = {'EXR_EUR': 1, 'EXR_USD': 1, 'INTEREST_RATE_ST': 1, 'INTEREST_RATE_LT': 1, 'NOMINAL_GDP_GROWTH': 4,
+                     'PRIMARY_BALANCE': 1}
 
 # Fanchart style, shared by StochasticDsaModel.fanchart and the country charts (functions/country_charts.py)
 FAN_OUTER, FAN_INNER = plt.get_cmap('Blues')(0.35), plt.get_cmap('Blues')(0.7)
@@ -75,11 +80,13 @@ class StochasticDsaModel(FiscalRules, DsaModel):
                 stochastic_start_year=None, # start year of stochastic projection
                 stochastic_period=5, # number of years for stochastic projection
                 shock_frequency='quarterly', # frequency of shock data
-                winsorize_sample=True, # clip shocks to the 5th and 95th percentiles (or to q and 1 - q if a number q)
-                estimation='normal', # 'normal', 'var_cholesky' or 'var_bootstrap'
+                winsorize_sample=True, # clip to the 5th and 95th percentiles (or to q and 1 - q if a number q)
+                winsorize_on='shocks', # 'shocks' clips the differences, 'levels' (Commission) the historical levels before differencing
+                estimation='normal', # 'normal', 'var_cholesky', 'var_bootstrap' or 'ar_bootstrap' (Commission's 2026 method, DSM 2025)
+                shock_intercept=False, # keep the estimated VAR or AR intercepts when simulating shocks
                 fiscal_multiplier=None, # None uses input file value
                 fiscal_multiplier_persistence=3, # years over which the multiplier effect on the output gap fades
-                fiscal_multiplier_type=None, # 'pers' or 'ec', None uses input file
+                fiscal_multiplier_type=None, # 'recursive' or 'impulse_response', None uses input file
                 bond_data=False, # Use bond level data for repayment profile
                 input_file=DEFAULT_INPUT_FILE, # input workbook, file name in data/InputData or full path
                 overrides=None, # user inputs on top of the input workbook: rows with CODE, VALUE and YEAR (None for parameters)
@@ -105,6 +112,7 @@ class StochasticDsaModel(FiscalRules, DsaModel):
         self.shock_frequency = shock_frequency
         self.shock_sample_start = shock_sample_start
         self.estimation = estimation
+        self.shock_intercept = shock_intercept
         if stochastic_start_year is None:
             stochastic_start_year = self.adjustment_start_year + adjustment_period
         self.stochastic_start_year = stochastic_start_year
@@ -116,6 +124,9 @@ class StochasticDsaModel(FiscalRules, DsaModel):
         elif shock_frequency == 'annual':
             self.draw_period = stochastic_period
         self.winsorize_sample = winsorize_sample
+        if winsorize_on not in ['levels', 'shocks']:
+            raise ValueError(f"Unknown winsorize_on '{winsorize_on}', use 'levels' or 'shocks'.")
+        self.winsorize_on = winsorize_on
         self._check_stochastic_period()
 
         # Get shock data
@@ -132,47 +143,54 @@ class StochasticDsaModel(FiscalRules, DsaModel):
 
     def _get_shock_data(self):
         """
-        Get shock data from the input workbook (sheets Shocks_Q and Shocks_A) and adjust outliers.
+        Get historical levels from the input workbook (sheets History_Q and History_A), adjust outliers and take
+        first differences to obtain the shocks.
         """
-        # Read country shock data and get number of variables for quarterly data
+        # Read quarterly shock data, fall back to annual data if not available
         if self.shock_frequency == 'quarterly':
-            self.df_shocks = read_shocks(self.input_file, self.country, 'Q')
-
-            # If quarterly shock data is not available, set parameters to annual
+            self.df_shocks = self._get_shocks('Q')
             if self.df_shocks.empty:
                 print(f'No quarterly shock data available for {self.country}, using annual data instead.')
                 self.shock_frequency = 'annual'
                 self.draw_period = self.stochastic_period
 
-        # Read country shock data for annual data
+        # Read annual shock data
         if self.shock_frequency == 'annual':
-            self.df_shocks = read_shocks(self.input_file, self.country, 'A')
-
-        # Subset shock period and order variables
-        self.df_shocks = self.df_shocks.loc[self.df_shocks.index.astype(str).str[:4].astype(int) >= self.shock_sample_start]
-        self.df_shocks = self.df_shocks[
-            ['EXR_EUR', 'EXR_USD', 'INTEREST_RATE_ST', 'INTEREST_RATE_LT', 'NOMINAL_GDP_GROWTH', 'PRIMARY_BALANCE']
-            ]
+            self.df_shocks = self._get_shocks('A')
 
         # Get number of variables
         self.num_variables = self.df_shocks.shape[1]
         assert self.num_variables == 6, 'Unexpected number of shock variables!'
 
-        # Adjust outliers by clipping shocks to the 5th and 95th percentiles (True) or to the q-th and (1 - q)-th
-        # percentiles (winsorize_sample = q, e.g. 0.01)
-        if self.winsorize_sample:
-            q = 0.05 if self.winsorize_sample is True else float(self.winsorize_sample)
-            self.df_shocks = self.df_shocks.clip(
-                lower=self.df_shocks.quantile(q, axis=0),
-                upper=self.df_shocks.quantile(1 - q, axis=0),
-                axis=1
-                )
+    def _get_shocks(self, freq):
+        """
+        Shocks (first differences) from the historical levels at frequency 'Q' or 'A' over the shock sample, with
+        levels or shocks clipped to the 5th and 95th percentiles (winsorize_sample = True) or to the q-th and
+        (1 - q)-th percentiles (winsorize_sample = q, e.g. 0.01).
+        """
+        # Levels on a complete period index, ordered variables, from the period before the shock sample starts
+        levels = read_history(self.input_file, self.country, freq)[
+            ['EXR_EUR', 'EXR_USD', 'INTEREST_RATE_ST', 'INTEREST_RATE_LT', 'NOMINAL_GDP_GROWTH', 'PRIMARY_BALANCE']
+            ]
+        if levels.empty:
+            return levels
+        levels = levels.reindex(pd.period_range(levels.index.min(), levels.index.max(), freq=levels.index.freq))
+        levels = levels.loc[levels.index >= pd.Period(str(self.shock_sample_start), freq=levels.index.freq) - 1]
+
+        q = 0.05 if self.winsorize_sample is True else float(self.winsorize_sample)
+        winsorize = lambda df: df.clip(lower=df.quantile(q, axis=0), upper=df.quantile(1 - q, axis=0), axis=1)
+        if self.winsorize_sample and self.winsorize_on == 'levels':
+            levels = winsorize(levels)
+        shocks = levels.diff().dropna()
+        if self.winsorize_sample and self.winsorize_on == 'shocks':
+            shocks = winsorize(shocks)
+        return shocks
 
 # ========================================================================================= #
 #                               SIMULATION METHODS                                          #
 # ========================================================================================= #
 
-    def simulate(self, N=100000):
+    def simulate(self, N=10000):
         """
         Simulate the stochastic model.
         """
@@ -180,11 +198,14 @@ class StochasticDsaModel(FiscalRules, DsaModel):
         self.N = N
         self._check_stochastic_period()
 
-        # Draw shocks from a multivariate normal distribution or VAR model
+        # Draw shocks from a multivariate normal distribution, VAR model or univariate AR models
         if self.estimation == 'normal':
             self._draw_shocks_normal()
-        elif self.estimation in ['var_cholesky', 'var_bootstrap']:
+        elif self.estimation in ['var_cholesky', 'var_bootstrap', 'ar_bootstrap']:
             self._draw_shocks_var()
+        else:
+            raise ValueError(f"Unknown estimation '{self.estimation}', use 'normal', 'var_cholesky', 'var_bootstrap' "
+                             f"or 'ar_bootstrap'.")
 
         # Aggregate quarterly shocks to annual shocks
         if self.shock_frequency == 'quarterly':
@@ -228,11 +249,15 @@ class StochasticDsaModel(FiscalRules, DsaModel):
 
     def _draw_shocks_var(self):
         """
-        Draw quarterly or annual shocks from a VAR model.
+        Draw quarterly or annual shocks from a VAR model or from univariate AR models.
 
-        This method estimates a VAR model on the shock DataFrame and then draws N samples of quarterly shocks from the residuals of the VAR
-        model using a bootstrap method. It reshapes the shocks into a 4-dimensional array of shape (N, draw_period, num_variables) where N is the
-        number of simulations, draw_period is the number of consecutive years or quarters drawn, and num_variables is the number of shock variables.
+        'var_cholesky' and 'var_bootstrap' estimate a VAR(1) on the shock DataFrame and draw residuals from a normal distribution
+        with the residual covariance matrix or by bootstrapping the residuals. 'ar_bootstrap' follows the Commission's method since
+        the DSM 2025 (Annex A4): each shock series is pre-filtered by its own AR(p) (_fit_ar) and residuals are bootstrapped row-wise,
+        keeping the residuals of one period together. The residual draws are passed through the estimated dynamics, without the
+        intercepts unless shock_intercept is True, to give an array
+        of shape (N, draw_period, num_variables), where N is the number of simulations, draw_period is the number of consecutive
+        years or quarters drawn, and num_variables is the number of shock variables.
         """
         # Define sample for VAR model, exclude EUR exchange rate shocks for euro area countries and DNK
         ea_countries = ['AUT', 'BEL', 'BGR', 'DNK', 'HRV', 'CYP', 'EST', 'FIN', 'FRA', 'DEU', 'GRC', 'IRL', 'ITA', 'LVA', 'LTU', 'LUX', 'MLT', 'NLD', 'PRT', 'SVK', 'SVN', 'ESP']
@@ -240,17 +265,26 @@ class StochasticDsaModel(FiscalRules, DsaModel):
         if self.country in ea_countries: var_sample.drop(columns=['EXR_EUR'], inplace=True)
         elif self.country == 'USA': var_sample.drop(columns=['EXR_USD'], inplace=True)
 
-        # Estimate VAR(1) model
-        self.var = VAR(var_sample).fit(1)
+        # Estimate univariate AR(p) models, stacked as a VAR with diagonal coefficient matrices
+        if self.estimation == 'ar_bootstrap':
+            lags, intercept, coefs, residuals = self._fit_ar(var_sample)
 
-        # Extract parameters from the VAR results
-        lags = self.var.k_ar
-        intercept = self.var.params.iloc[0].values
-        coefs = self.var.coefs
-        residuals = self.var.resid.values
+        # Estimate VAR(1) model and extract parameters
+        else:
+            self.var = VAR(var_sample).fit(1)
+            lags = self.var.k_ar
+            intercept = self.var.params.iloc[0].values
+            coefs = self.var.coefs
+            residuals = self.var.resid.values
+
+        # By default, simulate without the estimated intercepts: the residuals have mean zero, so that the simulated shocks
+        # have mean zero and the fan chart stays centred on the deterministic projection, as with normal shocks. With
+        # the intercepts, the shocks drift towards the average historical change of each series.
+        if not self.shock_intercept:
+            intercept = np.zeros_like(intercept)
 
         # Use bootstrap sampling from the residuals or Cholesky decomposition of the covariance matrix
-        if self.estimation == 'var_bootstrap':
+        if self.estimation in ['var_bootstrap', 'ar_bootstrap']:
             residual_draws = residuals[np.random.choice(len(residuals), size=(self.N, self.draw_period), replace=True)]
         if self.estimation == 'var_cholesky':
             cov_matrix = np.cov(residuals.T)
@@ -286,6 +320,38 @@ class StochasticDsaModel(FiscalRules, DsaModel):
         elif self.country == 'USA':
             exr_usd_shock = np.zeros((self.N, self.draw_period, 1))
             self.shocks_sim_draws = np.concatenate((self.shocks_sim_draws[:,:,:1], exr_usd_shock, self.shocks_sim_draws[:,:,1:]), axis=2)
+
+    def _fit_ar(self, sample):
+        """
+        Fit an AR(p) with intercept to each shock series by OLS (DSM 2025 Annex A4). Lag orders follow AR_LAGS_QUARTERLY for
+        quarterly shocks and are one for annual shocks. All series are estimated on the common sample after the largest lag, so
+        that the residuals of one period stay aligned for the bootstrap. Returns the largest lag, the intercepts, the coefficients
+        as VAR matrices of shape (lags, num_variables, num_variables) with zeros off the diagonal, and the residuals.
+        """
+        x = sample.values
+        num_obs, num_vars = x.shape
+        lag_orders = [AR_LAGS_QUARTERLY[col] if self.shock_frequency == 'quarterly' else 1 for col in sample.columns]
+        max_lag = max(lag_orders)
+
+        intercept = np.zeros(num_vars)
+        coefs = np.zeros((max_lag, num_vars, num_vars))
+        residuals = np.zeros((num_obs - max_lag, num_vars))
+        for i, p in enumerate(lag_orders):
+            y = x[max_lag:, i]
+            X = np.column_stack([np.ones(num_obs - max_lag)] + [x[max_lag - lag:num_obs - lag, i] for lag in range(1, p + 1)])
+            beta = np.linalg.lstsq(X, y, rcond=None)[0]
+            intercept[i] = beta[0]
+            coefs[:p, i, i] = beta[1:]
+            residuals[:, i] = y - X @ beta
+
+        # Store estimates for inspection
+        self.ar_params = pd.DataFrame(
+            {'const': intercept, **{f'L{lag}': coefs[lag - 1].diagonal() for lag in range(1, max_lag + 1)}},
+            index=sample.columns
+            )
+        self.ar_resid = pd.DataFrame(residuals, index=sample.index[max_lag:], columns=sample.columns)
+
+        return max_lag, intercept, coefs, residuals
 
     def _aggregate_shocks_quarterly(self):
         """

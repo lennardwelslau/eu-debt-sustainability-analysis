@@ -8,9 +8,12 @@
 #   T to L        Commission forecast (AMECO): GDP, deflator, balances, debt, stock-flow, IIR, where L is
 #                 the last forecast year (T+1 for spring, T+2 for autumn forecasts); later years are
 #                 projected by the model
-#   L+1 to T+5    Output Gaps Working Group projections if supplied (ogwg_file); otherwise the
-#                 output gap closes linearly by T+5 and potential growth is interpolated
-#   T+10 onwards  Ageing Report potential growth; ageing costs from T
+#   L+1 to T+9    Output Gaps Working Group (EUCAM T+10) projections of real and potential GDP, from the latest
+#                 file in data/RawData/ogwg (to the last year of the file, T+9 for a file of the same vintage);
+#                 potential growth then interpolated linearly to the Ageing Report in T+12, as in the Commission
+#                 prior guidance sheets. Without a file, the output gap closes linearly by T+5 and potential
+#                 growth is interpolated to the Ageing Report in T+10
+#   Ageing Report potential growth from T+12 (T+10 without an OGWG file); ageing costs from T
 #   Markets       ECB benchmark rates in T and T+1; T+10 anchors from the most recent Bloomberg file in
 #                 data/RawData/market (forward rates, euro area 5y5y inflation swap) if supplied, otherwise
 #                 from the Commission prior guidance sheet; T+30 anchors from the Commission sheet
@@ -55,7 +58,7 @@ def _ameco_vintage():
         return 'unknown'
 
 
-def build_countries(countries, sheets, reference_year=None, ogwg_file=None, market_file='latest', verbose=True):
+def build_countries(countries, sheets, reference_year=None, ogwg_file='latest', market_file='latest', verbose=True):
     """
     Build input data for all countries from public APIs and reference files.
 
@@ -64,7 +67,8 @@ def build_countries(countries, sheets, reference_year=None, ogwg_file=None, mark
         sheets (dict): Parsed Commission prior guidance sheets by country (market assumptions, fallbacks).
         reference_year (int): Reference year T. Defaults to the year after the last outturn year in Eurostat's EDP
             notification data (the vintage year of the forecast, as in the Commission prior guidance).
-        ogwg_file (str/Path): Optional Output Gaps Working Group file with real and potential GDP to T+5.
+        ogwg_file (str/Path): Output Gaps Working Group file (EUCAM T+10 projections of real and potential GDP);
+            'latest' (default) uses the most recent file in data/RawData/ogwg, None closes the output gap by T+5.
         market_file (str/Path): Bloomberg market expectations for the T+10 anchors (sources.read_market_expectations);
             'latest' (default) uses the most recent file in data/RawData/market, None the Commission sheet values.
 
@@ -105,10 +109,12 @@ def build_countries(countries, sheets, reference_year=None, ogwg_file=None, mark
     awg_ageing = S.read_awg_table(ref['awg'], 'Table II.1.135')
     awg_growth = S.read_awg_table(ref['awg'], 'Table II.1.14')
     dsm = S.read_dsm_fiche_rows(ref['dsm'], countries, {'SF': r'^\(3\) Stock-flow', 'TPI': r'^\(1\.1\.3\) Others'})
+    ogwg_file = S.latest_ogwg_file() if ogwg_file == 'latest' else ogwg_file
     ogwg = S.read_ogwg(ogwg_file, countries) if ogwg_file else None
     market_file = S.latest_market_file() if market_file == 'latest' else market_file
     market, market_vintage = S.read_market_expectations(market_file, countries) if market_file else (None, None)
 
+    ogwg_label = f'OGWG {S.ogwg_vintage(ogwg_file)}' if ogwg_file else None
     ea_deflator = ameco[('EA20', 'GDP_DEFLATOR')].pct_change() * 100
     usd_per_eur = ameco[('USA', 'XNE')]
 
@@ -116,7 +122,7 @@ def build_countries(countries, sheets, reference_year=None, ogwg_file=None, mark
     for c in countries:
         data[c] = _build_country(c, T, L, ameco[c], ea_deflator, usd_per_eur, rates, debt.loc[c], esm[c],
                                  awg_ageing[c], awg_growth[c], dsm['SF'].get(c), dsm['TPI'].get(c),
-                                 ogwg, sheets[c], ameco_vintage, debt_params.loc[c], debt_sources[c], debt_median,
+                                 ogwg, ogwg_label, sheets[c], ameco_vintage, debt_params.loc[c], debt_sources[c], debt_median,
                                  profiles.get(c), profile_info.get(c),
                                  market.loc[c] if market is not None else None, market_vintage)
         _check(c, T, L, data[c])
@@ -125,11 +131,11 @@ def build_countries(countries, sheets, reference_year=None, ogwg_file=None, mark
                    f'(debt structure to {max(debt_years.values())}), Eurostat debt maturity (gov_10dd_rmd, gov_10dd_ggd), '
                    f'ESM repayment database, 2024 Ageing Report, '
                    f'DSM 2025 country fiches, '
-                   f"{'OGWG file ' + str(ogwg_file) if ogwg_file else 'no OGWG file (output gap closes by T+5)'}. "
+                   f"{ogwg_label + ' (EUCAM T+10) projections of real and potential GDP, Ageing Report potential growth from T+12' if ogwg_file else 'no OGWG file (output gap closes by T+5)'}. "
                    + (f'Market anchors at T+10 from Bloomberg ({market_vintage}); market anchors at T+30, ' if market is not None
                       else f'Market anchors (T+10, T+30), ')
                    + f'EDP status and semi-elasticities from the Commission prior '
-                   f'guidance sheets; fiscal multiplier 0.75 with persistent effect on the output gap.')
+                   f'guidance sheets; fiscal multiplier 0.6 (DSM 2025) with the Commission output gap closure rule.')
     return data, description
 
 
@@ -174,7 +180,7 @@ def _debt_structure(ecb, eurostat, countries):
 
 
 def _build_country(c, T, L, am, ea_deflator, usd_per_eur, rates, debt, esm, awg_ageing, awg_growth,
-                   dsm_sf, dsm_tpi, ogwg, sheet, ameco_vintage, debt_params, debt_sources, debt_median,
+                   dsm_sf, dsm_tpi, ogwg, ogwg_label, sheet, ameco_vintage, debt_params, debt_sources, debt_median,
                    profile=None, profile_info=None, market=None, market_vintage=None):
     years = range(T - 3, END_YEAR + 1)
     out = pd.DataFrame(index=pd.Index(years, name='YEAR'), columns=list(SERIES), dtype=float)
@@ -224,13 +230,22 @@ def _build_country(c, T, L, am, ea_deflator, usd_per_eur, rates, debt, esm, awg_
     put('POTENTIAL_GDP', pgdp, 'api', f'{ameco_src}: {S.AMECO["POTENTIAL_GDP"]} to the last forecast year')
     rgdp, pgdp = rgdp.copy(), pgdp.copy()
     if ogwg is not None and c in ogwg['REAL_GDP'].columns:
+        # EUCAM T+10 projections to the last year of the file (at most T+10), AMECO levels grown with their growth
+        last_short = int(min(ogwg['POTENTIAL_GDP'][c].last_valid_index(), ogwg['REAL_GDP'][c].last_valid_index(),
+                             T + 10))
+        # The OGWG file should be of the same vintage as the AMECO forecast: potential growth in L must agree
+        diff = ogwg['POTENTIAL_GDP'][c].pct_change().get(L, np.nan) * 100 - (pgdp[L] / pgdp[L - 1] - 1) * 100
+        if not abs(diff) < 0.05:
+            warnings.warn(f'{c}: {ogwg_label} potential growth in {L} differs from AMECO by {diff:.2f} pp; check that '
+                          f'the OGWG file and the AMECO forecast are of the same vintage')
         for code, level, name in [('REAL_GDP', rgdp, 'real'), ('POTENTIAL_GDP', pgdp, 'potential')]:
             growth = ogwg[code][c].pct_change()
-            for y in range(L + 1, T + 6):
+            for y in range(L + 1, last_short + 1):
                 level[y] = level[y - 1] * (1 + growth[y])
-            put(code, level.loc[L + 1:T + 5], 'reference', f'{L + 1}-{T + 5}: AMECO level grown with OGWG {name} growth')
-        pot_growth_T5 = (pgdp[T + 5] / pgdp[T + 4] - 1) * 100
-        last_short = T + 5
+            put(code, level.loc[L + 1:last_short], 'reference',
+                f'{L + 1}-{last_short}: AMECO level grown with {ogwg_label} {name} growth')
+        pot_growth_T5 = (pgdp[last_short] / pgdp[last_short - 1] - 1) * 100
+        awg_start = T + 12  # Commission prior guidance sheets: Ageing Report potential growth from T+12
     else:
         # Output gap closes linearly by T+5, potential growth interpolated between L and T+10 (Ageing Report)
         g_L = (pgdp[L] / pgdp[L - 1] - 1) * 100
@@ -245,16 +260,18 @@ def _build_country(c, T, L, am, ea_deflator, usd_per_eur, rates, debt, esm, awg_
         put('POTENTIAL_GDP', pgdp.loc[L + 1:T + 5], 'derived', f'{L + 1}-{T + 5}: potential growth interpolated to Ageing Report T+10 (no OGWG file)')
         pot_growth_T5 = (pgdp[T + 5] / pgdp[T + 4] - 1) * 100
         last_short = T + 5
+        awg_start = T + 10
     put('REAL_GDP_GROWTH', rgdp.pct_change() * 100, 'derived', 'Growth of REAL_GDP', slice(T - 2, last_short))
 
-    # Potential growth: short term from levels, Ageing Report from T+10, linear interpolation in between
+    # Potential growth: short term from levels, Ageing Report from awg_start, linear interpolation in between
     pg = (pgdp.pct_change() * 100).loc[T - 2:last_short]
-    put('POTENTIAL_GDP_GROWTH', pg, 'derived', 'Growth of POTENTIAL_GDP to T+5')
-    lt = pd.Series(awg_growth).loc[T + 10:END_YEAR]
-    put('POTENTIAL_GDP_GROWTH', lt, 'reference', 'Ageing Report 2024 (Table II.1.14) from T+10')
-    between = pd.Series(np.nan, index=range(last_short, T + 11), dtype=float)
-    between[last_short], between[T + 10] = pot_growth_T5, lt.get(T + 10, np.nan)
-    put('POTENTIAL_GDP_GROWTH', between.interpolate().loc[last_short + 1:T + 9], 'derived', 'linear interpolation T+6 to T+9')
+    put('POTENTIAL_GDP_GROWTH', pg, 'derived', f'Growth of POTENTIAL_GDP to T+{last_short - T}')
+    lt = pd.Series(awg_growth).loc[awg_start:END_YEAR]
+    put('POTENTIAL_GDP_GROWTH', lt, 'reference', f'Ageing Report 2024 (Table II.1.14) from T+{awg_start - T}')
+    between = pd.Series(np.nan, index=range(last_short, awg_start + 1), dtype=float)
+    between[last_short], between[awg_start] = pot_growth_T5, lt.get(awg_start, np.nan)
+    put('POTENTIAL_GDP_GROWTH', between.interpolate().loc[last_short + 1:awg_start - 1], 'derived',
+        f'linear interpolation T+{last_short + 1 - T} to T+{awg_start - 1 - T}')
 
     # Market rates in T and T+1 where available (current year: year to date)
     for code in ['INTEREST_RATE_ST', 'INTEREST_RATE_LT']:
@@ -291,10 +308,10 @@ def _build_country(c, T, L, am, ea_deflator, usd_per_eur, rates, debt, esm, awg_
     params, psrc = commission_parameters(sheet)
     params['LAST_FORECAST_YEAR'] = L
     psrc['LAST_FORECAST_YEAR'] = ('api', 'Last AMECO forecast year')
-    params['FISCAL_MULTIPLIER_PERSISTENT'] = 1
-    psrc['FISCAL_MULTIPLIER_PERSISTENT'] = ('assumption', 'Persistent multiplier effect relative to the baseline output gap')
-    params['FISCAL_MULTIPLIER'] = 0.75
-    psrc['FISCAL_MULTIPLIER'] = ('assumption', 'Carnot and de Castro (2015); Commission sheets from 2025 use 0.6')
+    params['FISCAL_MULTIPLIER_PERSISTENT'] = 0
+    psrc['FISCAL_MULTIPLIER_PERSISTENT'] = ('assumption', 'Commission prior guidance output gap closure rule')
+    params['FISCAL_MULTIPLIER'] = 0.6
+    psrc['FISCAL_MULTIPLIER'] = ('assumption', 'Debt Sustainability Monitor 2025, Box 2.5 (0.75 until 2024)')
     psrc['EXCESSIVE_DEFICIT_PROCEDURE'] = ('commission', psrc['EXCESSIVE_DEFICIT_PROCEDURE'][1] + ' - update if EDP status changed')
     # EDP decisions after the guidance sheet (the sheet's flag refers to its own reference year)
     if c in S.EDP_STATUS_UPDATES and sheet.T < S.EDP_STATUS_UPDATES[c][1] <= T:

@@ -35,8 +35,9 @@ def build_inputs(mode='api', countries=EU27, vintage=None, prior_guidance='lates
         download (bool): Download missing Commission sheets before building.
         overrides (DataFrame): Optional table of user overrides (COUNTRY, CODE, YEAR, VALUE, COMMENT)
             written to the Overrides sheet.
-        shocks (bool or dict): True fetches historical shock data for the stochastic model (Eurostat, OECD, ECB),
-            a dict of shock tables (e.g. from a previous build) is written as is, False omits them.
+        shocks (bool or dict): True fetches historical levels of the shock variables for the stochastic model
+            (Eurostat, OECD, ECB), a dict of History_Q/History_A tables (e.g. from a previous build) is written as is,
+            False omits them.
         **kwargs: Passed to the mode-specific builder.
 
     Returns:

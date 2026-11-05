@@ -15,7 +15,6 @@
 # Author: Lennard Welslau
 # ========================================================================================= #
 
-import warnings
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -64,7 +63,7 @@ LEGACY_SOURCES = {
 }
 
 
-def convert_legacy_csv(csv_file, out_file=None, countries=EU27, vintage=None, history_guidance='2024', shock_files=None):
+def convert_legacy_csv(csv_file, out_file=None, countries=EU27, vintage=None, history_guidance='2024', shocks=True):
     """
     Convert a legacy deterministic_data CSV to an input workbook.
 
@@ -75,8 +74,9 @@ def convert_legacy_csv(csv_file, out_file=None, countries=EU27, vintage=None, hi
         vintage (str): Vintage label, defaults to the CSV file suffix (e.g. '2025_10').
         history_guidance (str): Commission prior guidance vintage used for the fiscal balance in T-2 and T-1 and the EDP
             status in T, which legacy files do not contain. None skips both.
-        shock_files (tuple): Legacy quarterly and annual shock CSVs (stochastic_data_quarterly.csv and
-            stochastic_data_annual.csv in the folder of csv_file by default).
+        shocks (bool or dict): True fetches historical levels of the shock variables for the stochastic model
+            (Eurostat, OECD, ECB), a dict of History_Q/History_A tables (e.g. from another workbook) is written as is,
+            False omits them.
     """
     csv_path = Path(csv_file) if Path(csv_file).exists() else INPUT_DIR / csv_file
     df = pd.read_csv(csv_path)
@@ -113,17 +113,12 @@ def convert_legacy_csv(csv_file, out_file=None, countries=EU27, vintage=None, hi
         'description': f'Converted from legacy input file {csv_file}. Country-specific assumptions that were '
                        'hard-coded in earlier model versions are written into the parameters and STOCK_FLOW_RATIO.',
     }
-    # Legacy stochastic shock files (first differences), if available
-    from .shocks import legacy_shocks
-    q, a = shock_files or (csv_path.parent / 'stochastic_data_quarterly.csv', csv_path.parent / 'stochastic_data_annual.csv')
-    q, a = Path(q), Path(a)
-    shocks = legacy_shocks(q, a) if q.exists() and a.exists() else None
     if shocks:
-        meta['shock_sources'] = {'Shocks_Q/Shocks_A': f'Legacy files {q.name} and {a.name}'}
-    else:
-        warnings.warn(f'Legacy shock files not found ({q}, {a}): the workbook has no shock data for the stochastic '
-                      f'model; pass shock_files or add Shocks_Q/Shocks_A sheets')
-    write_workbook(out_file, data, meta, shocks=shocks)
+        from .shocks import build_shocks, SHOCK_SOURCES
+        if shocks is True:
+            shocks = build_shocks(countries)
+        meta['shock_sources'] = SHOCK_SOURCES
+    write_workbook(out_file, data, meta, shocks=shocks or None)
     return out_file
 
 

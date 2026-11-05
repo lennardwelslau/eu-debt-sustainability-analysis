@@ -93,7 +93,7 @@ def compare_with_commission(input_file, countries=EU27, prior_guidance=None, sto
                     dsa_target = model.binding_tables['Summary'].iloc[:, 0]['DSA-based SPB target (% of GDP)']
                     a_dsa = (dsa_target - model.spb_bca[model.adjustment_start - 1]) / n
                 row['model_annual_adjustment_dsa'] = a_dsa
-                row['model_annual_adjustment_dsa_rounded'] = round(a_dsa, 2)  # Commission rules: already on the 0.01 grid
+                row['model_annual_adjustment_dsa_rounded'] = round(a_dsa, 2)  # for display next to the Commission's
                 row['model_dsa_spb_end'] = res['spb_T'] + n * a_dsa
                 row['model_spb_end'] = model.spb_target_dict['binding']
                 row['model_binding_criterion'] = ref['criterion']

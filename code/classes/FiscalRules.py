@@ -48,7 +48,6 @@ BINDING_RULES = {
     'debt_safeguard': 'default',
     'deficit_resilience': 'default',
     'frontloading': True,
-    'grid': None,
 }
 COMMISSION_RULES = {
     'dsa_criteria': 'commission',
@@ -58,7 +57,6 @@ COMMISSION_RULES = {
     'debt_safeguard': 'commission',
     'deficit_resilience': 'commission',
     'frontloading': False,
-    'grid': 0.01,
 }
 
 
@@ -89,7 +87,8 @@ class FiscalRules:
 
         The default rules follow Darvas, Welslau and Zettelmeyer (2024). Each rule can be switched to the version used
         in the Commission prior guidance calculation sheets, individually (keyword arguments) or all at once
-        (rules='commission'), see BINDING_RULES and COMMISSION_RULES:
+        (rules='commission'), see BINDING_RULES and COMMISSION_RULES. Unlike the calculation sheets, the annual
+        adjustment is not rounded up to 0.01 pp.: all targets are exact to the tolerance of the search.
 
             dsa_criteria        'default': per deterministic scenario, debt declines or stays below 60%, deficit below 3%,
                                 stochastic criteria; 'commission': debt declines in all scenarios and stochastically, or
@@ -113,7 +112,6 @@ class FiscalRules:
                                 above 1.55%; None
             frontloading        True: EDP and deficit resilience steps front-load the adjustment, later steps are reduced
                                 to keep the SPB target; False: minimum steps are added on top (Commission)
-            grid                None: exact SPB target; 0.01: annual adjustment rounded up to 0.01 pp. (Commission)
 
         Arguments edp, debt_safeguard and deficit_resilience accept True (rule from rules), False, or a rule name.
         """
@@ -137,7 +135,7 @@ class FiscalRules:
         # Default rules follow the sequential DWZ (2024) implementation, other rules a constant annual adjustment
         default = (all(self.rules[k] in (BINDING_RULES[k], None)
                        for k in ['dsa_criteria', 'edp', 'debt_safeguard', 'deficit_resilience'])
-                   and self.rules['frontloading'] and self.rules['grid'] is None)
+                   and self.rules['frontloading'])
         try:
             if default:
                 self._find_spb_binding_default(stochastic, print_results, save_df)
@@ -479,9 +477,6 @@ class FiscalRules:
         # 1. DSA-based annual adjustment
         a = self._dsa_annual_adjustments(stochastic, bounds, tol)
         a_dsa, criterion = self._combine_dsa_criteria(a)
-        a_dsa_exact = a_dsa
-        if rules['grid']:
-            a_dsa = np.ceil(round(a_dsa / rules['grid'], 6)) * rules['grid']
         for k, v in a.items():
             self.spb_target_dict[k] = spb_start + n * v
         self.binding_spb_target = spb_start + n * a_dsa
@@ -494,13 +489,10 @@ class FiscalRules:
             self.find_edp(spb_target=self.binding_spb_target)
             self.edp_default_steps = np.copy(self.edp_steps)
 
-        # 3. Debt safeguard on the path including EDP and deficit resilience steps. The safeguard is not monotonic in
-        # the adjustment (years drop out of debt bands), so search upwards on a grid
+        # 3. Debt safeguard on the path including EDP and deficit resilience steps
         a_binding = a_dsa
         if debt_safeguard and self.reference_trajectory:
-            step = rules['grid'] or 0.01
-            while not self._debt_safeguard_met(self._rules_path(a_binding)) and a_binding < bounds[1]:
-                a_binding = np.round(a_binding + step, 6)
+            a_binding = self._debt_safeguard_adjustment(a_dsa, bounds[1], tol)
             if not self._debt_safeguard_met(self._rules_path(a_binding)):
                 warnings.warn(f'{self.country}: debt safeguard not met at the upper bound of {bounds[1]} pp. per year')
         self.debt_safeguard_binding = bool(a_binding > a_dsa)
@@ -518,11 +510,32 @@ class FiscalRules:
         self.guidance = 'reference trajectory' if self.reference_trajectory else 'technical information'
         self.binding_parameter_dict.update({
             'annual_adjustment_dsa': a_dsa,
-            'annual_adjustment_dsa_exact': a_dsa_exact,
             'annual_adjustment': a_binding,
             'guidance': self.guidance,
         })
         self._save_binding(edp, debt_safeguard, deficit_resilience, print_results)
+
+    def _debt_safeguard_adjustment(self, a_start, upper, tol=1e-4, step=0.01):
+        """
+        Smallest constant annual adjustment from a_start upwards for which the path, including EDP and deficit
+        resilience steps, meets the debt safeguard. The safeguard is not monotonic in the adjustment (years drop out of
+        debt bands), so the search first steps upwards by step, then refines the adjustment by bisection between the
+        last step that fails and the first that meets the safeguard, to the tolerance tol. Returns the last step tried
+        if the safeguard is not met up to upper.
+        """
+        a = a_start
+        while not self._debt_safeguard_met(self._rules_path(a)) and a < upper:
+            a = np.round(a + step, 6)
+        if a <= a_start or not self._debt_safeguard_met(self._rules_path(a)):
+            return a
+        lo, hi = a - step, a
+        while hi - lo > tol:
+            mid = (lo + hi) / 2
+            if self._debt_safeguard_met(self._rules_path(mid)):
+                hi = mid
+            else:
+                lo = mid
+        return hi
 
     def _dsa_annual_adjustments(self, stochastic, bounds, tol):
         """

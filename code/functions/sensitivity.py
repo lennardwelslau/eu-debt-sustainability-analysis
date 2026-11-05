@@ -185,11 +185,246 @@ def stochastic_start_at_adjustment(model, criterion='end of adjustment'):
 EARLY_START = functools.partial(stochastic_start_at_adjustment, criterion='end of adjustment')
 
 
+# Long-run assumptions of the Ageing Report ---------------------------------------------- #
+# TFP growth of the 2024 Ageing Report (Table II.1.18) and the total cost of ageing of the Ageing Reports 2015 to
+# 2024, stored in OUTPUT_DIR so that the runs do not depend on the annex files.
+TFP_FILE = OUTPUT_DIR / 'awg2024_tfp_growth.csv'
+
+# Total cost of ageing (pensions, health care, long-term care and education, percent of GDP) by Ageing Report vintage:
+# reference file key, sheet, tables added and tables subtracted. The 2015 annex has no total; the 2018 total includes
+# unemployment benefits, which the 2021 and 2024 totals do not contain.
+AGEING_VINTAGES = {
+    2015: ('awg2015', 'cross-country tables', ['Table III.1.66:', 'Table III.1.101:', 'Table III.1.113:',
+                                               'Table III.1.144:'], []),
+    2018: ('awg2018', 'cross-country tables', ['Table III.1.136:'], ['Table III.1.135:']),
+    2021: ('awg2021', 'cross-country tables_only_final', ['Table III.1.137:'], []),
+    2024: ('awg', 'cross-country_tables', ['Table II.1.135:'], []),
+}
+
+
+def awg_tfp_growth(refresh=False):
+    """
+    TFP growth (percent) by year (rows) and country (ISO3 columns), 2024 Ageing Report (Table II.1.18).
+    """
+    if refresh or not os.path.exists(TFP_FILE):
+        from data_pipeline.sources import read_awg_table, download_reference_files
+        t = read_awg_table(download_reference_files()['awg'], 'Table II.1.18')
+        os.makedirs(os.path.dirname(TFP_FILE), exist_ok=True)
+        t.rename_axis('year').to_csv(TFP_FILE)
+    return pd.read_csv(TFP_FILE, index_col='year')
+
+
+def _awg_annex_table(path, sheet, prefix):
+    """
+    One cross-country table of an Ageing Report annex (title starting with prefix): DataFrame year x ISO3.
+    """
+    import openpyxl
+    from data_pipeline.commission import EC_ISO2
+    inv = {v: k for k, v in EC_ISO2.items()}
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    rows = wb[sheet].iter_rows(values_only=True)
+    for r in rows:
+        if any(isinstance(v, str) and v.strip().startswith(prefix) for v in r):
+            break
+    else:
+        raise KeyError(f'{prefix} not found in {path}')
+    header, data = None, {}
+    for r in rows:
+        if header is None:
+            if any(isinstance(v, (int, float)) and 2000 < v < 2100 for v in r):
+                header = {j: int(v) for j, v in enumerate(r) if isinstance(v, (int, float)) and 2000 < v < 2100}
+            continue
+        label = next((v.strip() for v in r if isinstance(v, str)), None)
+        if label is None or label.startswith(('EU', 'EA')):
+            break
+        if label in inv:
+            data[inv[label]] = {y: r[j] for j, y in header.items() if isinstance(r[j], (int, float))}
+    wb.close()
+    return pd.DataFrame(data)
+
+
+def awg_ageing_cost(vintage, refresh=False):
+    """
+    Total cost of ageing (pensions, health care, long-term care and education, percent of GDP), AWG reference
+    scenario of the Ageing Report of the given vintage (AGEING_VINTAGES), by year (rows; projection points
+    interpolated linearly) and country (ISO3 columns). Stored in OUTPUT_DIR.
+    """
+    path = OUTPUT_DIR / f'awg{vintage}_ageing_cost.csv'
+    if refresh or not os.path.exists(path):
+        from data_pipeline.sources import download_reference_files
+        key, sheet, add, subtract = AGEING_VINTAGES[vintage]
+        file = download_reference_files()[key]
+        t = sum(_awg_annex_table(file, sheet, prefix) for prefix in add)
+        for prefix in subtract:
+            t = t - _awg_annex_table(file, sheet, prefix)
+        t = t.dropna(axis=1, how='all')
+        t = t.reindex(range(t.index.min(), t.index.max() + 1)).interpolate()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        t.rename_axis('year').to_csv(path)
+    return pd.read_csv(path, index_col='year')
+
+
+def awg_ageing_scenario(scenario, refresh=False):
+    """
+    Total cost of ageing (percent of GDP) in one sensitivity scenario of the 2024 Ageing Report (AGEING_SCENARIOS,
+    'baseline' for the reference scenario of the same annex tables), by year (rows; projection points interpolated
+    linearly) and country (ISO3 columns). Stored in OUTPUT_DIR.
+    """
+    title = AGEING_SCENARIOS[scenario]
+    path = OUTPUT_DIR / f"awg2024_ageing_cost_{title.split()[-1].replace('.', '_')}.csv"
+    if refresh or not os.path.exists(path):
+        from data_pipeline.sources import download_reference_files
+        t = _awg_annex_table(download_reference_files()['awg'], 'cross-country_tables', f'{title}:')
+        t = t.dropna(axis=1, how='all')
+        t = t.reindex(range(t.index.min(), t.index.max() + 1)).interpolate()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        t.rename_axis('year').to_csv(path)
+    return pd.read_csv(path, index_col='year')
+
+
+def ageing_costs_scenario(model, scenario):
+    """
+    Add to the projected change in the total cost of ageing after T the deviation of a 2024 Ageing Report scenario
+    (AGEING_SCENARIOS) from the reference scenario (level in T unchanged; deviation held constant after 2070).
+    """
+    a, b = awg_ageing_scenario(scenario)[model.country], awg_ageing_scenario('baseline')[model.country]
+    years = model.start_year + np.arange(len(model.ageing_cost))
+    dev = (a - b).reindex(years).ffill().values
+    model.ageing_cost = model.ageing_cost + (dev - dev[0])
+
+
+# Scenarios of the 2024 Ageing Report run as individual checks: the two in the direction of the revisions of the
+# EUROPOP2025 population projections since the 2024 Ageing Report (more migration, lower fertility)
+AGEING_SCENARIO_CHECKS = {'Higher migration (+33%)': 'higher migration (+33%)',
+                          'Lower fertility (-20%)': 'lower fertility (-20%)'}
+
+
+def ageing_vintage_revisions(horizon=None):
+    """
+    Revisions of the projected change in the total cost of ageing between consecutive Ageing Reports (pp. of GDP):
+    for each pair of vintages, the change over horizon years (default AGEING_HORIZON) from the publication year of
+    the newer report, newer minus older projection, by country. Returns a Series indexed by 'ISO3:old-new'. The
+    revisions mix projection errors with legislated reforms, and they are not demeaned.
+    """
+    horizon = horizon or AGEING_HORIZON
+    vintages = sorted(AGEING_VINTAGES)
+    out = {}
+    for old, new in zip(vintages[:-1], vintages[1:]):
+        a, b = awg_ageing_cost(old), awg_ageing_cost(new)
+        for c in a.columns.intersection(b.columns):
+            ch = lambda d: d.loc[new + horizon, c] - d.loc[new, c]
+            out[f'{c}:{old}-{new}'] = ch(b) - ch(a)
+    return pd.Series(out, name='ageing').dropna()
+
+
+# Potential growth of the Ageing Reports 2015 to 2024 (annex table of potential GDP growth), reference file key, sheet
+# and table; the first year of each table is the base year of the report
+POTENTIAL_VINTAGES = {
+    2015: ('awg2015', 'cross-country tables', 'Table III.1.16:'),
+    2018: ('awg2018', 'cross-country tables', 'Table III.1.16:'),
+    2021: ('awg2021', 'cross-country tables_only_final', 'Table III.1.16:'),
+    2024: ('awg', 'cross-country_tables', 'Table II.1.14:'),
+}
+
+
+def awg_potential_growth(vintage, refresh=False):
+    """
+    Potential GDP growth (percent) of the Ageing Report of the given vintage (POTENTIAL_VINTAGES), by year (rows; from the
+    base year of the report, projection points interpolated linearly) and country (ISO3 columns). Stored in OUTPUT_DIR.
+    """
+    path = OUTPUT_DIR / f'awg{vintage}_potential_growth.csv'
+    if refresh or not os.path.exists(path):
+        from data_pipeline.sources import download_reference_files
+        key, sheet, prefix = POTENTIAL_VINTAGES[vintage]
+        t = _awg_annex_table(download_reference_files()[key], sheet, prefix).dropna(axis=1, how='all')
+        t = t.reindex(range(t.index.min(), t.index.max() + 1)).interpolate()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        t.rename_axis('year').to_csv(path)
+    return pd.read_csv(path, index_col='year')
+
+
+def potential_growth_vintage_revisions(horizon=None):
+    """
+    Revisions of projected potential growth between consecutive Ageing Reports (pp.): for each pair of vintages, average
+    growth over the horizon years (default AGEING_HORIZON) after the base year of the newer report, newer minus older
+    projection for the same years, by country (the method of ageing_vintage_revisions). Returns a Series indexed by
+    'ISO3:old-new'. Not demeaned.
+    """
+    horizon = horizon or AGEING_HORIZON
+    vintages = sorted(POTENTIAL_VINTAGES)
+    out = {}
+    for old, new in zip(vintages[:-1], vintages[1:]):
+        a, b = awg_potential_growth(old), awg_potential_growth(new)
+        years = range(int(b.index.min()) + 1, int(b.index.min()) + horizon + 1)
+        for c in a.columns.intersection(b.columns):
+            out[f'{c}:{old}-{new}'] = b.loc[years, c].mean() - a.loc[years, c].mean()
+    return pd.Series(out, name='potential_growth').dropna()
+
+
+def shift_growth_t1(model, delta, persistence=3):
+    """
+    Shift real growth in the first year after T (T+1) by delta (pp.), with potential growth unchanged: the output gap
+    in T+1 moves by about delta and the deviation then closes with the Commission's rule, a share (P-1)/P, (P-2)/P, ...
+    of the T+1 deviation in the following years (two thirds and one third for P = 3).
+    """
+    t1 = 1
+    dev = np.zeros(model.projection_period)
+    gap1 = ((model.rgdp_bl[t1 - 1] * (1 + (model.rg_bl[t1] + delta) / 100)) / model.rgdp_pot_bl[t1] - 1) * 100
+    dev[t1] = gap1 - model.output_gap_bl[t1]
+    for j in range(1, persistence):
+        dev[t1 + j] = dev[t1] * (persistence - j) / persistence
+    model.output_gap_bl = model.output_gap_bl + dev
+    model.rgdp_bl = model.rgdp_pot_bl * (1 + model.output_gap_bl / 100)
+    model.rg_bl[1:] = (model.rgdp_bl[1:] / model.rgdp_bl[:-1] - 1) * 100
+    for s in range(1, model.projection_period):
+        model.ng_bl[s] = (1 + model.rg_bl[s] / 100) * (1 + model.pi[s] / 100) * 100 - 100
+        model.ngdp_bl[s] = model.ngdp_bl[s - 1] * (1 + model.ng_bl[s] / 100)
+    model.rg, model.rgdp, model.output_gap = model.rg_bl.copy(), model.rgdp_bl.copy(), model.output_gap_bl.copy()
+    model.ng, model.ngdp = model.ng_bl.copy(), model.ngdp_bl.copy()
+
+
+def hold_tfp_growth(model, labour_share=0.65):
+    """
+    Remove the convergence of TFP growth assumed by the Ageing Report after T+10: where TFP growth would rise above
+    its T+10 value, it stays at that value. Potential growth falls by the increase in TFP growth divided by the
+    labour share (production function of the Ageing Report, with capital deepening following TFP); real growth moves
+    with potential growth, so that the output gap is unchanged.
+    """
+    tfp = awg_tfp_growth()[model.country]
+    base = tfp.loc[model.start_year + 10]
+    for t in range(11, model.projection_period):
+        d = max(tfp.loc[min(model.start_year + t, tfp.index.max())] - base, 0) / labour_share
+        model.rg_pot_bl[t] -= d
+        model.rg_bl[t] -= d
+    for t in range(1, model.projection_period):
+        model.rgdp_pot_bl[t] = model.rgdp_pot_bl[t - 1] * (1 + model.rg_pot_bl[t] / 100)
+        model.rgdp_bl[t] = model.rgdp_bl[t - 1] * (1 + model.rg_bl[t] / 100)
+    model.output_gap_bl = (model.rgdp_bl / model.rgdp_pot_bl - 1) * 100
+    model.rg_pot, model.rgdp_pot = model.rg_pot_bl.copy(), model.rgdp_pot_bl.copy()
+    model.rg, model.rgdp, model.output_gap = model.rg_bl.copy(), model.rgdp_bl.copy(), model.output_gap_bl.copy()
+
+
+TFP_HOLD = functools.partial(hold_tfp_growth, labour_share=0.65)
+
+
+def ageing_costs_2021(model):
+    """
+    Replace the projected change in the total cost of ageing after T by that of the 2021 Ageing Report (level in T
+    unchanged; held constant after 2070).
+    """
+    a = awg_ageing_cost(2021)[model.country]
+    years = model.start_year + np.arange(len(model.ageing_cost))
+    path = a.reindex(years).ffill().values
+    model.ageing_cost = model.ageing_cost[0] + (path - a.loc[model.start_year])
+
+
 # Calibration of the ranges ------------------------------------------------------------ #
 
 # Forecast errors (realised minus forecast), the same for all countries:
-# - real GDP growth and CPI inflation: IMF WEO forecasts, average error over t+1 to t+5, autumn vintages 2000-2018,
-#   27 EU countries, demeaned by country (the average error, a bias, is reported separately);
+# - potential growth: IMF WEO forecast of real growth five years ahead minus ex-post potential growth in that year from
+#   the latest WEO (weo_potential_errors), autumn vintages 2000-2018, the 19 EU countries with a WEO output gap,
+#   demeaned by country (the average error is reported separately);
+# - CPI inflation: IMF WEO forecasts, average error over t+1 to t+5, the same countries and vintages, demeaned by country;
 # - short- and long-term rates: German zero-coupon curve (Bundesbank), realised 1-year and 10-year rates minus the
 #   forward rates priced ten years earlier (the DSA uses the 3M10Y and 10Y10Y forwards), year ends 1986-2015, demeaned;
 # - ageing costs: deviation of the 2024 Ageing Report scenarios (all except the pension policy scenarios) from the
@@ -217,15 +452,14 @@ WEO_NAMES = {
 WEO_VINTAGES = (2000, 2018)    # autumn WEO vintages with five realised forecast years
 FORWARD_YEARS = (1986, 2015)   # year ends with forward rates ten years ahead and realised rates
 AGEING_BASE_YEAR, AGEING_HORIZON = 2024, 14
-AGEING_SCENARIOS = {  # Ageing Report 2024 statistical annex: total cost of ageing, % of GDP
+AGEING_SCENARIOS = {  # Ageing Report 2024 statistical annex: total cost of ageing, % of GDP (without the TFP
+    # scenarios, which change growth as well as ageing costs)
     'baseline': 'Table II.1.135',
     'Higher life expectancy (+2 years)': 'Table II.1.137',
     'Higher migration (+33%)': 'Table II.1.138',
     'Lower migration (-33%)': 'Table II.1.139',
     'Lower fertility (-20%)': 'Table II.1.140',
     'Higher employment rate of older workers (+10 pp.)': 'Table II.1.141',
-    'Higher TFP growth (+0.2 pp.)': 'Table II.1.142',
-    'Lower TFP growth (-0.2 pp.)': 'Table II.1.143',
     'Risk scenario (health care and long-term care)': 'Table II.1.136',
 }
 
@@ -233,23 +467,25 @@ AGEING_SCENARIOS = {  # Ageing Report 2024 statistical annex: total cost of agei
 CALIBRATED_RANGES = {
     'rate_st_T10': (-1.22, 0.40),
     'rate_lt_T10': (-1.24, 0.89),
-    'inflation_T10': (-0.74, 0.64),
-    'potential_growth': (-0.84, 1.08),
-    'ageing_shift': (-0.24, 0.14),
+    'inflation_T10': (-0.62, 0.53),
+    'potential_growth': (-0.83, 0.75),
+    'ageing_shift': (-0.59, 0.44),
 }
 
 
 # Values of the individual checks of the forecasts: round, symmetric shifts of about the size of typical errors (half the
-# width of the interquartile range of CALIBRATED_RANGES: 0.81 and 1.07 for the rates, 0.69 for inflation, 0.96 for
-# growth, 0.19 for ageing costs). Symmetric shifts show the asymmetric response of the targets directly; the joint draws
+# width of the interquartile range of CALIBRATED_RANGES: 0.81 and 1.07 for the rates, 0.58 for inflation, 0.79 for
+# growth, 0.52 for ageing costs). Symmetric shifts show the asymmetric response of the targets directly; the joint draws
 # use the full distribution of the errors (EMPIRICAL_DRAWS).
 OAT_VALUES = {
     'rate_st_T10': (-1.0, 1.0),
     'rate_lt_T10': (-1.0, 1.0),
-    'inflation_T10': (-0.75, 0.75),
-    'potential_growth': (-1.0, 1.0),
-    'ageing_shift': (-0.2, 0.2),
+    'inflation_T10': (-0.5, 0.5),
+    'potential_growth': (-0.75, 0.75),
+    'ageing_shift': (-0.5, 0.5),
 }
+# Until November 2026, the WEO growth errors were five-year averages of realised minus forecast real growth (all 27
+# countries; interquartile range -0.84 to +1.08, check +-1 pp.).
 
 
 def weo_forecast_errors(path=WEO_FILE):
@@ -271,6 +507,60 @@ def weo_forecast_errors(path=WEO_FILE):
     e = g[['growth', 'inflation']].mean()[g[['growth', 'inflation']].count().min(axis=1) == 5]
     e.index = e.index.set_levels(e.index.levels[0].map({v: k for k, v in WEO_NAMES.items()}), level=0)
     return e.rename_axis(['country', 'vintage'])
+
+
+# Growth errors of the joint draws: the WEO forecast of real growth five years ahead (the last year of each autumn
+# vintage, when the WEO assumes the output gap to be closed) minus ex-post potential growth in that year, computed from
+# real GDP and the output gap of the latest WEO. Countries without a WEO output gap drop out of the WEO errors.
+WEO_LATEST = '2026-10'  # vintage of the latest WEO (IMF data portal, release of 13 October 2026)
+WEO_POTENTIAL_FILE = REFERENCE_DIR / f"weo_{WEO_LATEST.replace('-', '_')}_output_gap.csv"
+
+
+def weo_latest_series(path=WEO_POTENTIAL_FILE, refresh=False):
+    """
+    Real GDP (NGDP_R) and the output gap (NGAP_NPGDP, percent of potential GDP) of the latest WEO for the EU countries,
+    long format (country, indicator, year, value). Downloaded from the IMF data portal with sdmx1 and stored in path.
+    """
+    if refresh or not os.path.exists(path):
+        import sdmx
+        msg = sdmx.Client('IMF_DATA').data('WEO', key=f"{'+'.join(WEO_NAMES)}.NGAP_NPGDP+NGDP_R.A")
+        s = sdmx.to_pandas(msg).reset_index()
+        d = pd.DataFrame({'country': s['COUNTRY'], 'indicator': s['INDICATOR'],
+                          'year': s['TIME_PERIOD'].astype(str).str[:4].astype(int), 'value': s['value'].astype(float)})
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        d.to_csv(path, index=False)
+    return pd.read_csv(path)
+
+
+def weo_potential_growth(path=WEO_POTENTIAL_FILE):
+    """
+    Ex-post potential growth (percent) by year (rows) and country (ISO3 columns) from the latest WEO: annual change of
+    potential GDP, NGDP_R / (1 + NGAP_NPGDP / 100). Years without an output gap (and the year after) are missing.
+    """
+    d = weo_latest_series(path).pivot_table(index='year', columns=['indicator', 'country'], values='value')
+    gap = d['NGAP_NPGDP']
+    pot = d['NGDP_R'][gap.columns] / (1 + gap / 100)
+    return (pot.pct_change(fill_method=None) * 100).dropna(axis=1, how='all')
+
+
+def weo_potential_errors(path=WEO_FILE):
+    """
+    Errors of the WEO growth forecasts as forecasts of potential growth (pp.), by EU country and autumn vintage
+    (WEO_VINTAGES): ex-post potential growth in the fifth year after the vintage (weo_potential_growth) minus the WEO
+    forecast of real growth for that year (column growth), with the five-year average error of CPI inflation of the
+    same country and vintage (column inflation, weo_forecast_errors). Not demeaned.
+    """
+    d = pd.read_excel(path, sheet_name='Dataset')
+    d = d[d['Country'].isin(WEO_NAMES.values()) & (d['exercise'] == 2) & d['weo_year'].between(*WEO_VINTAGES)
+          & (d['year'] == d['weo_year'] + 5)]
+    d = d.assign(country=d['Country'].map({v: k for k, v in WEO_NAMES.items()}))
+    fc = d.set_index(['country', 'weo_year'])['ngdp_rpc'].rename_axis(['country', 'vintage'])
+    fc = fc[~fc.index.duplicated()]
+    pot = weo_potential_growth()
+    realised = pd.Series({(c, v): pot.loc[v + 5, c] if c in pot and v + 5 in pot.index else np.nan for c, v in fc.index})
+    e = pd.DataFrame({'growth': realised.values - fc.values}, index=fc.index)
+    e = e.join(weo_forecast_errors(path)[['inflation']], how='inner')
+    return e.dropna()
 
 
 def forward_rate_errors():
@@ -327,13 +617,15 @@ def calibration_table(weo=None, forwards=None, ageing=None):
     """
     Ranges of the forecasts that set the centre line (CALIBRATED_RANGES), recomputed from the data: source, sample,
     number of errors, average error (bias, not used) and 25th and 75th percentile of the errors (demeaned by country
-    for the WEO forecasts, demeaned for the forward rates; scenario deviations for ageing costs), with the range used.
+    for the WEO forecasts, demeaned for the forward rates; revisions between Ageing Report vintages for ageing costs,
+    not demeaned), with the range used.
     """
-    weo = weo_forecast_errors() if weo is None else weo
+    weo = weo_potential_errors() if weo is None else weo
     forwards = forward_rate_errors() if forwards is None else forwards
-    ageing = ageing_scenario_deviations() if ageing is None else ageing
+    ageing = ageing_vintage_revisions() if ageing is None else ageing
     v0, v1 = WEO_VINTAGES
     f0, f1 = FORWARD_YEARS
+    n_weo = weo.index.get_level_values(0).nunique()
     rows = []
     for name, x, demeaned, source, sample in [
             ('rate_st_T10', forwards['rate_st'], forwards['rate_st'] - forwards['rate_st'].mean(),
@@ -341,18 +633,16 @@ def calibration_table(weo=None, forwards=None, ageing=None):
             ('rate_lt_T10', forwards['rate_lt'], forwards['rate_lt'] - forwards['rate_lt'].mean(),
              'Bundesbank: 10-year rate in ten years minus 10Y10Y forward rate', f'Germany, year ends {f0}-{f1}'),
             ('inflation_T10', weo['inflation'], weo['inflation'] - weo['inflation'].groupby(level=0).transform('mean'),
-             'IMF WEO: CPI inflation, average error over five years', f'EU27, autumn vintages {v0}-{v1}'),
+             'IMF WEO: CPI inflation, average error over five years', f'{n_weo} EU countries, autumn vintages {v0}-{v1}'),
             ('potential_growth', weo['growth'], weo['growth'] - weo['growth'].groupby(level=0).transform('mean'),
-             'IMF WEO: real GDP growth, average error over five years', f'EU27, autumn vintages {v0}-{v1}'),
-            ('ageing_shift', ageing.stack(), ageing.stack(),
-             f'Ageing Report 2024: scenarios except pension policy, change in ageing costs {AGEING_BASE_YEAR}-'
-             f'{AGEING_BASE_YEAR + AGEING_HORIZON}', f'EU27, {ageing.shape[1]} scenarios')]:
+             'IMF WEO: potential growth forecast error (ex-post potential growth minus WEO forecast five years ahead)', f'{n_weo} EU countries, autumn vintages {v0}-{v1}'),
+            ('ageing_shift', ageing, ageing,
+             f'Ageing Reports {min(AGEING_VINTAGES)}-{max(AGEING_VINTAGES)}: revision of the projected change in '
+             f'ageing costs over {AGEING_HORIZON} years', f'EU27, {len(AGEING_VINTAGES) - 1} pairs of vintages')]:
         rows.append({'assumption': name, 'source': source, 'sample': sample, 'n': int(x.count()), 'bias': x.mean(),
                      'p25': demeaned.quantile(0.25), 'p75': demeaned.quantile(0.75),
                      'range_low': CALIBRATED_RANGES[name][0], 'range_high': CALIBRATED_RANGES[name][1]})
-    t = pd.DataFrame(rows).set_index('assumption')
-    t.loc['ageing_shift', 'bias'] = np.nan  # scenario deviations, not forecast errors
-    return t
+    return pd.DataFrame(rows).set_index('assumption')
 
 
 # Empirical distribution of the errors, drawn in the joint draws (EMPIRICAL_DRAWS): demeaned errors as in
@@ -364,22 +654,85 @@ def forecast_error_samples(path=ERRORS_FILE, refresh=False):
     """
     Demeaned errors used in the joint draws, by source: 'rates' (German forward-rate errors by year end, columns
     rate_st and rate_lt, demeaned), 'weo' (WEO errors by country and vintage, columns growth and inflation, demeaned by
-    country) and 'ageing' (Ageing Report scenario deviations by country and scenario, column ageing). Errors of the same
-    source are kept together, so that their correlation is preserved. Computed once and stored in path.
+    country) and 'ageing' (revisions of the projected change in ageing costs between Ageing Report vintages by country
+    and pair of vintages, column ageing, not demeaned). Errors of the same source are kept together, so that their
+    correlation is preserved. Computed once and stored in path; update_ageing_errors replaces the ageing errors only.
     """
     if refresh or not os.path.exists(path):
-        f, w, a = forward_rate_errors(), weo_forecast_errors(), ageing_scenario_deviations()
+        f, w = forward_rate_errors(), weo_potential_errors()
+        a = ageing_vintage_revisions()
         rates = (f - f.mean()).reset_index().rename(columns={'year': 'key'}).assign(source='rates')
         weo = (w - w.groupby(level=0).transform('mean')).reset_index()
         weo = weo.assign(key=weo['country'] + ':' + weo['vintage'].astype(str), source='weo')
-        ageing = a.stack().rename('ageing').reset_index()
-        ageing = ageing.assign(key=ageing.iloc[:, 0] + ':' + ageing.iloc[:, 1].astype(str), source='ageing')
+        ageing = a.rename_axis('key').reset_index().assign(source='ageing')
         out = pd.concat([d[['source', 'key'] + [c for c in d if c in ('rate_st', 'rate_lt', 'growth', 'inflation', 'ageing')]]
                          for d in (rates, weo, ageing)], ignore_index=True)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         out.round(6).to_csv(path, index=False)
     d = pd.read_csv(path)
     return {s: g.drop(columns='source').set_index('key').dropna(axis=1, how='all') for s, g in d.groupby('source')}
+
+
+def rg_error_quantile(q, errors=None):
+    """
+    Quantile q of the error in r - g (pp.): error of the long-term rate T+10 minus error of growth, over all pairs of
+    the demeaned errors of the two sources, which are independent in the joint draws. The adverse r-g stress test of
+    size s raises r - g by 2s, so that s = rg_error_quantile(q) / 2 covers the share q of the errors.
+    """
+    e = forecast_error_samples() if errors is None else errors
+    diff = e['rates']['rate_lt'].values[:, None] - e['weo']['growth'].values[None, :]
+    return float(np.quantile(diff, q))
+
+
+# Robustness of the joint draws: paired errors. Each WEO observation (country, vintage) is paired with the German
+# forward-rate errors of the same year, for the overlapping vintages (PAIRED_YEARS), so that the draws keep the
+# correlation of the rate errors with the growth and inflation errors. The rate errors are then applied to nominal rates
+# (real_rates=False), so that inflation errors are not added to them a second time.
+PAIRED_YEARS = (2000, 2015)
+
+
+def paired_error_samples(years=PAIRED_YEARS, path=ERRORS_FILE):
+    """
+    Errors for the paired joint draws: source 'paired' (WEO errors by country and vintage in years, with the forward-rate
+    errors of the vintage year; growth and inflation demeaned again by country, rates over all pairs) and 'ageing' (as in
+    forecast_error_samples).
+    """
+    e = forecast_error_samples(path)
+    rates = e['rates'].copy()
+    rates.index = rates.index.astype(int)
+    weo = e['weo'].reset_index()
+    weo[['country', 'vintage']] = weo['key'].str.split(':', expand=True)
+    weo['vintage'] = weo['vintage'].astype(int)
+    weo = weo[weo['vintage'].between(*years)].join(rates, on='vintage', how='inner')
+    weo[['growth', 'inflation']] -= weo.groupby('country')[['growth', 'inflation']].transform('mean')
+    weo[['rate_st', 'rate_lt']] -= weo[['rate_st', 'rate_lt']].mean()
+    return {'paired': weo.set_index('key')[['growth', 'inflation', 'rate_st', 'rate_lt']], 'ageing': e['ageing']}
+
+
+def update_weo_errors(path=ERRORS_FILE):
+    """
+    Replace the WEO errors in path by the errors of weo_potential_errors (demeaned by country), keeping the stored rate
+    and ageing errors unchanged.
+    """
+    d = pd.read_csv(path)
+    w = weo_potential_errors()
+    w = (w - w.groupby(level=0).transform('mean')).reset_index()
+    w = w.assign(key=w['country'] + ':' + w['vintage'].astype(str), source='weo')[['source', 'key', 'growth', 'inflation']]
+    d = pd.concat([d[d['source'] != 'weo'], w], ignore_index=True)
+    d.round(6).to_csv(path, index=False)
+    return w
+
+
+def update_ageing_errors(path=ERRORS_FILE):
+    """
+    Replace the ageing errors in path by the revisions between Ageing Report vintages (ageing_vintage_revisions),
+    keeping the stored rate and WEO errors unchanged (they would change with data revisions if recomputed).
+    """
+    d = pd.read_csv(path)
+    ageing = ageing_vintage_revisions().rename_axis('key').reset_index().assign(source='ageing')
+    d = pd.concat([d[d['source'] != 'ageing'], ageing], ignore_index=True)
+    d.round(6).to_csv(path, index=False)
+    return ageing
 
 
 # Joint draws from the empirical errors: draw name -> (source, sort column, {assumption: column}). The Latin hypercube
@@ -414,8 +767,25 @@ LITERATURE_RANGES = {
 
 # Ranges of the joint draws where they differ from the range of the individual checks. The multiplier is drawn over
 # 0.5 to 1.0, where most estimates for normal times lie; 1.5 (crisis, synchronised consolidation, no monetary offset)
-# is an individual check only.
-JOINT_RANGES = {'fiscal_multiplier': (0.5, 1.0)}
+# is an individual check only. The persistence is drawn from 2 to 4 years, centred on the baseline of 3 years, so that
+# the draws do not shift the expected target.
+JOINT_RANGES = {'fiscal_multiplier': (0.5, 1.0), 'multiplier_persistence': (2, 3, 4)}
+
+# Commission methodology, passed as baseline model arguments of all runs (run_specs(model_kwargs=...)):
+# - '2024': prior guidance of 2024 (DSM 2023, published 2024): multiplier 0.75, output gap closure rule of the
+#   calculation sheets, shocks of the stochastic projection drawn from a joint normal distribution.
+# - '2026': changes agreed by the DSA working group (DSM 2025, published 2026): multiplier 0.6 (Box 2.5) and shocks
+#   pre-filtered by univariate AR(p) models with bootstrapped residuals (Box 2.3, Annex A4.3).
+METHODS = {
+    '2024': {'fiscal_multiplier_type': 'recursive', 'fiscal_multiplier': 0.75, 'estimation': 'normal'},
+    '2026': {'fiscal_multiplier_type': 'recursive', 'fiscal_multiplier': 0.6, 'estimation': 'ar_bootstrap'},
+}
+ESTIMATIONS = {'normal': 'normal', 'var_bootstrap': 'VAR bootstrap', 'ar_bootstrap': 'AR bootstrap'}
+
+# Mean error of the WEO growth forecasts as forecasts of potential growth before demeaning (ex-post potential growth
+# minus forecast, pp.; weo_potential_errors): the average error removed from the joint draws, applied as an individual
+# check
+GROWTH_BIAS = -0.77
 
 
 # Individual checks ------------------------------------------------------------------ #
@@ -462,7 +832,7 @@ ASSUMPTIONS = {
 # Discrete settings drawn in the joint draws: name -> (label, [(value, spec fields)]), the baseline setting included.
 DISCRETE_ASSUMPTIONS = {
     'multiplier_persistence': ('Multiplier persistence', [
-        (p, {'model_kwargs': {'fiscal_multiplier_persistence': p}}) for p in LITERATURE_RANGES['multiplier_persistence']]),
+        (p, {'model_kwargs': {'fiscal_multiplier_persistence': p}}) for p in JOINT_RANGES['multiplier_persistence']]),
 }
 
 # Blocks of checks, by what settles them (group labels of the individual checks):
@@ -492,6 +862,14 @@ PARAMETER_ASSUMPTIONS = ['fiscal_multiplier', 'multiplier_persistence', 'elastic
 JOINT_ASSUMPTIONS = FORECAST_ASSUMPTIONS + PARAMETER_ASSUMPTIONS
 JOINT_RUNS = {'joint': JOINT_ASSUMPTIONS}
 
+# Paired joint draws (robustness, paired_error_samples): rates, growth and inflation from the same observation
+EMPIRICAL_DRAWS_PAIRED = {
+    'macro_T10': ('paired', 'growth', {'potential_growth': 'growth', 'inflation_T10': 'inflation',
+                                       'rate_st_T10': 'rate_st', 'rate_lt_T10': 'rate_lt'}),
+    'ageing_shift': EMPIRICAL_DRAWS['ageing_shift'],
+}
+JOINT_RUNS['paired'] = ['macro_T10', 'ageing_shift'] + PARAMETER_ASSUMPTIONS
+
 # Calibration scenarios of the risk standard: all settings at the lenient or at the strict end of their range (the
 # ageing cost period cannot be stricter than the baseline of 10 years, which covers the horizon of the DSA criteria)
 CALIBRATION_SCENARIOS = {
@@ -499,8 +877,13 @@ CALIBRATION_SCENARIOS = {
                                'lower_spb_shock': 0.25},
                 'model_kwargs': {'ageing_cost_period': 5}},
     'strict': {'attributes': {'prob_target': 0.8, 'adverse_r_g_shock': 0.75, 'financial_stress_shock': 1.5,
-                              'lower_spb_shock': 0.75}},
+                              'lower_spb_shock': 0.75},
+               'setup': [TFP_HOLD]},
 }
+# The same scenarios for the margins against forecast errors only (probability threshold and stress-test sizes),
+# without the ageing cost period and TFP growth, which are assumptions about future budgets and long-run growth
+CALIBRATION_SCENARIOS.update({
+    f'{k}_margins': {'attributes': v['attributes']} for k, v in list(CALIBRATION_SCENARIOS.items())})
 
 # Block of each continuous assumption (group label of its individual checks)
 KIND_OF = {name: (RISK_STANDARD if name in ('adverse_r_g_shock', 'financial_stress_shock', 'lower_spb_shock')
@@ -542,12 +925,14 @@ def assumption_spec(name, value, real_rates=False, **kwargs):
                      base_value=base, knob=name, **{**assumption_fields(name, value, real_rates), **kwargs})
 
 
-def build_oat_specs(latest_file=None, real_rates=False):
+def build_oat_specs(latest_file=None, real_rates=False, method='2024'):
     """
     Individual checks (baseline first), grouped by block (BLOCKS): forecasts, model parameters, estimation of risk,
     risk standard (with the lenient and strict CALIBRATION_SCENARIOS) and data, then the noise band. latest_file:
     workbook for the data update check (default latest_input_file()). real_rates: inflation checks keep real interest
-    rates unchanged (see assumption_fields). Ids do not depend on the grouping, so that cached runs remain valid.
+    rates unchanged (see assumption_fields). method: Commission methodology of the baseline (METHODS), whose
+    multiplier and shock estimation are left out of the alternatives; the runs take it as model_kwargs. Ids do not
+    depend on the grouping, so that cached runs remain valid.
     """
     specs = [baseline_spec()]
     spec = make_spec
@@ -556,29 +941,57 @@ def build_oat_specs(latest_file=None, real_rates=False):
     for name in ['rate_st_T10', 'rate_lt_T10', 'inflation_T10', 'potential_growth', 'ageing_shift',
                  'rate_st_T30', 'rate_lt_T30', 'inflation_T30']:
         specs += [assumption_spec(name, v, real_rates=real_rates) for v in ASSUMPTIONS[name][4]]
+    # Potential growth shifted by the mean error removed from the joint draws
+    specs.append(spec('macro:potential_growth:bias', FORECASTS, 'Potential growth (mean error)', _fmt(GROWTH_BIAS),
+                      value=GROWTH_BIAS, base_value=0,
+                      setup=[functools.partial(shift_potential_growth_t10, delta=GROWTH_BIAS)]))
 
-    # 2. Model parameters (literature ranges)
-    specs += [assumption_spec('fiscal_multiplier', v) for v in ASSUMPTIONS['fiscal_multiplier'][4]]
+    # 2. Model parameters (literature ranges), with the multipliers of the other Commission methodologies, and the
+    # output gap rule of this paper's earlier versions: the multiplier effect fades linearly over the persistence
+    base_multiplier = METHODS[method]['fiscal_multiplier']
+    multipliers = sorted({*ASSUMPTIONS['fiscal_multiplier'][4], *(m['fiscal_multiplier'] for m in METHODS.values())}
+                         - {base_multiplier})
+    specs += [assumption_spec('fiscal_multiplier', v) for v in multipliers]
     specs += [spec(f'multiplier:persistence:{p}', MODEL_PARAMETERS, 'Multiplier persistence', f'{p} years', value=p,
                    base_value=3, model_kwargs={'fiscal_multiplier_persistence': p})
               for p in LITERATURE_RANGES['multiplier_persistence'] if p != 3]
+    specs += [spec(f'multiplier:rule:impulse_response:{p}', MODEL_PARAMETERS, 'Impulse-response output gap rule',
+                   f'{p} years', value=p, base_value=3,
+                   model_kwargs={'fiscal_multiplier_type': 'impulse_response', 'fiscal_multiplier_persistence': p})
+              for p in LITERATURE_RANGES['multiplier_persistence']]
     specs += [assumption_spec('elasticity_scale', v) for v in ASSUMPTIONS['elasticity_scale'][4]]
 
-    # 3. Estimation of risk
-    specs.append(spec('stochastic:start:adjustment', ESTIMATION, 'Stochastic start', 'first adjustment year',
+    # 3. Estimation of risk (start and horizon of the stochastic projection: calibration conventions, block 4)
+    specs.append(spec('stochastic:start:adjustment', RISK_STANDARD, 'Stochastic start', 'first adjustment year',
                       setup=[EARLY_START]))
-    specs.append(spec('stochastic:period:10', ESTIMATION, 'Stochastic period', '10 years', value=10, base_value=5,
+    specs.append(spec('stochastic:period:10', RISK_STANDARD, 'Stochastic period', '10 years', value=10, base_value=5,
                       model_kwargs={'stochastic_period': 10}))
     specs += [spec(f'stochastic:sample_start:{y}', ESTIMATION, 'Shock sample start', str(y), value=y, base_value=2000,
                    model_kwargs={'shock_sample_start': y}) for y in [1990, 2010]]
     specs.append(spec('stochastic:frequency:annual', ESTIMATION, 'Shock frequency', 'annual',
                       model_kwargs={'shock_frequency': 'annual'}))
-    specs.append(spec('stochastic:estimation:var_bootstrap', ESTIMATION, 'Shock estimation', 'var_bootstrap',
-                      model_kwargs={'estimation': 'var_bootstrap'}))
+    base_estimation = METHODS[method]['estimation']
+    specs += [spec(f'stochastic:estimation:{e}', ESTIMATION, 'Shock estimation', e, model_kwargs={'estimation': e})
+              for e in ESTIMATIONS if e != base_estimation]
+    # Bootstraps with the estimated intercepts in the simulation: the DSM 2025 does not say whether they are kept
+    specs += [spec(f'stochastic:estimation:{e}:intercept', ESTIMATION, 'Shock estimation', f'{e}, with intercept',
+                   model_kwargs={'estimation': e, 'shock_intercept': True}) for e in ('var_bootstrap', 'ar_bootstrap')]
+    if base_estimation != 'ar_bootstrap':  # otherwise the same as the winsorisation check below
+        specs.append(spec('stochastic:estimation:ar_bootstrap:winsorize_off', ESTIMATION, 'Shock estimation',
+                          'ar_bootstrap, not winsorised', model_kwargs={'estimation': 'ar_bootstrap',
+                                                                        'winsorize_sample': False}))
     specs.append(spec('stochastic:winsorize:0.01', ESTIMATION, 'Winsorised shocks', '1st and 99th percentiles',
                       model_kwargs={'winsorize_sample': 0.01}))  # baseline: 5th and 95th percentiles
     specs.append(spec('stochastic:winsorize:off', ESTIMATION, 'Winsorised shocks', 'off',
                       model_kwargs={'winsorize_sample': False}))
+
+    # Ageing costs of the previous vintage of the Ageing Report (revisions as a measure of projection errors)
+    specs.append(spec('macro:ageing_vintage:2021', FORECASTS, 'Ageing costs (vintage)', '2021 Ageing Report',
+                      setup=[ageing_costs_2021]))
+    # Ageing costs of demographic scenarios of the 2024 Ageing Report (AGEING_SCENARIO_CHECKS)
+    specs += [spec(f"macro:ageing_scenario:{v.split(' (')[0].replace(' ', '_')}", FORECASTS, 'Ageing costs (scenario)',
+                   v, setup=[functools.partial(ageing_costs_scenario, scenario=k)])
+              for k, v in AGEING_SCENARIO_CHECKS.items()]
 
     # 4. Risk standard (the full menu is build_menu_specs)
     specs += [spec(f'stochastic:prob_target:{p}', RISK_STANDARD, 'Probability target', f'{p:g}', value=p,
@@ -586,7 +999,8 @@ def build_oat_specs(latest_file=None, real_rates=False):
     for name in ['adverse_r_g_shock', 'financial_stress_shock', 'lower_spb_shock']:
         specs += [assumption_spec(name, v) for v in ASSUMPTIONS[name][4]]
     specs += [spec(f'macro:ageing_cost_period:{p}', RISK_STANDARD, 'Ageing cost period', f'{p} years', value=p,
-                   base_value=10, model_kwargs={'ageing_cost_period': p}) for p in [5]]
+                   base_value=10, model_kwargs={'ageing_cost_period': p}) for p in [0, 5]]
+    specs.append(spec('risk:tfp_hold', RISK_STANDARD, 'TFP growth after T+10', 'held at T+10 value', setup=[TFP_HOLD]))
     specs += [spec(f'calibration:{k}', RISK_STANDARD, 'Calibration scenario', k, **v)
               for k, v in CALIBRATION_SCENARIOS.items()]
 
@@ -618,7 +1032,7 @@ MENU_HORIZON = [5, 10]
 # and strict CALIBRATION_SCENARIOS
 MENU_STRESS = {'adverse_r_g_shock': [0.25, 0.75], 'financial_stress_shock': [0.5, 1.5],
                'lower_spb_shock': [0.25, 0.75]}
-MENU_AGEING_PERIOD = [5]
+MENU_AGEING_PERIOD = [0, 5]
 
 
 def build_menu_specs():
@@ -646,6 +1060,7 @@ def build_menu_specs():
     specs += [make_spec(f'menu:ageing_cost_period:{y}', RISK_STANDARD, 'Ageing cost period', f'{y} years', value=y,
                         base_value=10, knob='ageing_cost_period', model_kwargs={'ageing_cost_period': y})
               for y in MENU_AGEING_PERIOD]
+    specs.append(make_spec('menu:tfp_hold', RISK_STANDARD, 'TFP growth after T+10', 'held at T+10 value', setup=[TFP_HOLD]))
     return specs
 
 
@@ -669,7 +1084,7 @@ def menu_table(df, adjustment_period=4):
 
 
 def build_global_specs(n_draws=200, seed=0, assumptions=JOINT_ASSUMPTIONS, real_rates=False, ranges=JOINT_RANGES,
-                       empirical=True):
+                       empirical=True, draws=None, errors=None):
     """
     Joint draws: n_draws Latin hypercube draws of the given assumptions at once (JOINT_RUNS), with the stochastic
     criterion; all other settings stay at the baseline. With empirical=True, the assumptions in EMPIRICAL_DRAWS are drawn
@@ -679,17 +1094,20 @@ def build_global_specs(n_draws=200, seed=0, assumptions=JOINT_ASSUMPTIONS, real_
     set all their members at the same position in their ranges; discrete settings (DISCRETE_ASSUMPTIONS) take each
     setting with equal probability. The first spec is the baseline. The data update and the random seed are not drawn.
     With real_rates=True, the interest rate draws are real rates: nominal rates move with the inflation draws of the
-    same anchor (see assumption_fields).
+    same anchor (see assumption_fields). draws and errors replace EMPIRICAL_DRAWS and forecast_error_samples() (e.g.
+    EMPIRICAL_DRAWS_PAIRED and paired_error_samples() for the paired robustness draws).
     """
     from scipy.stats import qmc
     sample = qmc.LatinHypercube(d=len(assumptions), seed=seed).random(n_draws)
-    errors = forecast_error_samples() if empirical and any(a in EMPIRICAL_DRAWS for a in assumptions) else None
+    draws = draws or EMPIRICAL_DRAWS
+    if errors is None and empirical and any(a in draws for a in assumptions):
+        errors = forecast_error_samples()
     specs = [baseline_spec()]
     for i, u in enumerate(sample):
         fields, params = {'model_kwargs': {}, 'attributes': {}, 'overrides': [], 'setup': [], 'binding_kwargs': {}}, {}
         for name, x in zip(assumptions, u):
-            if errors is not None and name in EMPIRICAL_DRAWS:
-                source, sort_col, columns = EMPIRICAL_DRAWS[name]
+            if errors is not None and name in draws:
+                source, sort_col, columns = draws[name]
                 obs = errors[source].sort_values(sort_col)
                 row = obs.iloc[min(int(x * len(obs)), len(obs) - 1)]
                 part_fields = {}
@@ -856,12 +1274,11 @@ def applicable_dsa_criteria(d):
     return a if max(a.values()) <= max(b.values()) else b
 
 
-def dsa_target_criteria_only(df, grid=None):
+def dsa_target_criteria_only(df):
     """
     DSA target from the DSA criteria alone: the highest SPB of the applicable criteria (applicable_dsa_criteria),
-    without the adjustment floor, which the paper counts with the binding target, and without the rounding of the
-    annual adjustment to 0.01 of the Commission sheets (grid=0.01 restores it). The Commission's DSA target (with floor
-    and rounding) is kept as dsa_target_commission and dsa_criterion_commission. Runs without criteria keep their
+    without the adjustment floor, which the paper counts with the binding target. The DSA target with the floor, as
+    the Commission defines it, is kept as dsa_target_commission and dsa_criterion_commission. Runs without criteria keep their
     values. The DSA debt paths are not recomputed.
     """
     out = df.copy()
@@ -875,10 +1292,7 @@ def dsa_target_criteria_only(df, grid=None):
             continue
         crit = applicable_dsa_criteria(d)
         k = max(crit, key=crit.get)
-        a = (crit[k] - spb) / n
-        if grid:
-            a = np.ceil(round(a / grid, 6)) * grid
-        targets.append(spb + n * a)
+        targets.append(crit[k])
         criteria.append(k)
     out['dsa_target'], out['dsa_criterion'] = targets, criteria
     return out
@@ -1067,7 +1481,14 @@ def _save_cache(cache, path):
     tmp = f'{path}.tmp'
     with open(tmp, 'wb') as f:
         pickle.dump(cache, f)
-    os.replace(tmp, path)
+    for attempt in range(10):  # Windows refuses the rename while another process (e.g. a virus scan) reads the file
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 9:
+                raise
+            time.sleep(2)
 
 
 def run_specs(specs, countries, adjustment_periods=(4, 7), input_file=None, rules='commission', seed=0,
@@ -1083,7 +1504,7 @@ def run_specs(specs, countries, adjustment_periods=(4, 7), input_file=None, rule
         input_file (str): Baseline input workbook.
         rules (str): Baseline rules of find_spb_binding ('commission' or 'default').
         seed (int): Random seed set before each run (specs can set their own).
-        model_kwargs (dict): Baseline model arguments of all runs (e.g. {'fiscal_multiplier_type': 'pers'}); the
+        model_kwargs (dict): Baseline model arguments of all runs (e.g. {'fiscal_multiplier_type': 'impulse_response'}); the
             model arguments of a spec take precedence.
         attributes (dict): Baseline model attributes of all runs (e.g. {'adjustment_bound': 5}, the upper bound of
             the annual adjustment in find_spb_binding); the attributes of a spec take precedence.
@@ -1211,7 +1632,7 @@ def _own_criterion(row, base):
     """
     d = base['spb_target_dict'] if isinstance(base['spb_target_dict'], dict) else {}
     knob, group = row.get('knob'), row.get('group')
-    if group == ESTIMATION or knob in ('stochastic', 'Probability target'):
+    if group == ESTIMATION or knob in ('stochastic', 'Probability target', 'Stochastic start', 'Stochastic period'):
         return 'stochastic' if 'stochastic' in d else None
     sc = OWN_SCENARIO.get(knob, 'main_adjustment')
     if f'debt_declines_{sc}' not in d:  # no reference trajectory: only the baseline scenario, debt below 60%

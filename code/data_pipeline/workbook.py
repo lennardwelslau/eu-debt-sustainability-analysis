@@ -9,8 +9,7 @@
 #   Overrides  - optional user overrides (COUNTRY, CODE, YEAR, VALUE, COMMENT), applied on read
 #   Sources    - source note for every variable
 #   <ISO3>     - one sheet per country with a PARAMETERS block and a TIME SERIES block
-#   Shocks_Q / Shocks_A   - historical shocks (first differences) for the stochastic model
-#   History_Q / History_A - underlying historical levels (for transparency, not read by the model)
+#   History_Q / History_A - historical levels of the shock variables for the stochastic model
 #
 # Values can be edited directly in the country sheets or, preferably, entered in the Overrides
 # sheet, which keeps user inputs separate from the fetched data and survives a rebuild.
@@ -66,7 +65,7 @@ def _clean_value(v):
 #                                           WRITER                                          #
 # ========================================================================================= #
 
-SHOCK_SHEETS = ['Shocks_Q', 'Shocks_A', 'History_Q', 'History_A']
+SHOCK_SHEETS = ['History_Q', 'History_A']
 
 
 def write_workbook(path, countries, meta, overrides=None, shocks=None):
@@ -83,7 +82,8 @@ def write_workbook(path, countries, meta, overrides=None, shocks=None):
                 'series_sources': {code: note}}}
         meta (dict): Workbook metadata, e.g. vintage, mode, description, reference_year.
         overrides (DataFrame): Optional overrides table with OVERRIDE_COLUMNS.
-        shocks (dict): Optional {sheet name: long DataFrame (COUNTRY, PERIOD, variables)} for the stochastic model.
+        shocks (dict): Optional {'History_Q', 'History_A': long DataFrame (COUNTRY, PERIOD, variables)} with
+            historical levels for the stochastic model.
     """
     no_history = [iso for iso, d in countries.items() if d.get('reference_year') is not None
                   and pd.isna(d['series']['FISCAL_BALANCE'].get(d['reference_year'] - 1, np.nan))]
@@ -198,7 +198,7 @@ def _write_sources(ws, countries, meta):
             ws.cell(row=r, column=j, value=v)
         r += 1
     for code, note in meta.get('shock_sources', {}).items():
-        for j, v in enumerate([code, 'shocks', 'Historical series for stochastic shocks (Shocks_Q, Shocks_A)', '', note], start=1):
+        for j, v in enumerate([code, 'shocks', 'Historical series for stochastic shocks (History_Q, History_A)', '', note], start=1):
             ws.cell(row=r, column=j, value=v)
         r += 1
     for col, w in zip('ABCDE', [30, 10, 70, 22, 110]):
@@ -287,21 +287,21 @@ def read_workbook(input_file):
         countries = {name: _parse_country_sheet(df) for name, df in sheets.items() if name in COUNTRY_NAMES}
         _apply_overrides(countries, sheets.get('Overrides'))
         meta = _parse_readme(sheets.get('README'))
-        meta['shocks'] = {name[-1]: _parse_table(sheets[name]) for name in ['Shocks_Q', 'Shocks_A'] if name in sheets}
+        meta['history'] = {name[-1]: _parse_table(sheets[name]) for name in SHOCK_SHEETS if name in sheets}
         _CACHE.clear()
         _CACHE[key] = (countries, meta)
     return _CACHE[key]
 
 
-def read_shocks(input_file, country, frequency='Q'):
+def read_history(input_file, country, frequency='Q'):
     """
-    Return historical shocks (first differences) for one country, indexed by quarterly or annual period.
+    Return historical levels of the shock variables for one country, indexed by quarterly or annual period.
     """
     _, meta = read_workbook(input_file)
     freq = frequency[0].upper()
-    if freq not in meta['shocks']:
-        raise KeyError(f'No Shocks_{freq} sheet in {input_file}. Rebuild the workbook with shock data.')
-    df = meta['shocks'][freq]
+    if freq not in meta['history']:
+        raise KeyError(f'No History_{freq} sheet in {input_file}. Rebuild the workbook with shock data.')
+    df = meta['history'][freq]
     df = df.loc[df['COUNTRY'] == country].drop(columns='COUNTRY').set_index('PERIOD')
     df.index = pd.PeriodIndex(df.index.astype(str), freq='Q' if freq == 'Q' else 'Y')
     return df.astype(float)

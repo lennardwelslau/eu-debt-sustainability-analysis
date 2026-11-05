@@ -57,7 +57,7 @@ class DsaModel:
             ageing_cost_period=10,  # number of years for ageing cost adjustment after adjustment period
             fiscal_multiplier=None, # fiscal multiplier for fiscal adjustment, None uses input file value
             fiscal_multiplier_persistence=3, # persistence of fiscal multiplier in years
-            fiscal_multiplier_type=None, # 'pers' (persistent) or 'ec' (Commission prior guidance rule), None uses input file
+            fiscal_multiplier_type=None, # 'recursive' (Commission prior guidance rule) or 'impulse_response', None uses input file
             bond_data=False, # Use bond level data for repayment profile
             input_file=DEFAULT_INPUT_FILE,  # input workbook, file name in data/InputData or full path
             overrides=None,  # user inputs on top of the input workbook: rows with CODE, VALUE and YEAR (None for parameters)
@@ -236,10 +236,10 @@ class DsaModel:
         if self.fiscal_multiplier is None:
             self.fiscal_multiplier = self.params['FISCAL_MULTIPLIER']
 
-        # Multiplier type from input file unless specified: persistent effect or Commission output gap closure rule
+        # Output gap rule from input file unless specified: Commission's recursive rule or impulse response
         if self.fiscal_multiplier_type is None:
             persistent = self.params.get('FISCAL_MULTIPLIER_PERSISTENT', np.nan)
-            self.fiscal_multiplier_type = 'ec' if persistent == 0 else 'pers'
+            self.fiscal_multiplier_type = 'recursive' if persistent == 0 else 'impulse_response'
 
         # Last forecast year (T+x), defaults to T+1
         last_forecast_year = self.params.get('LAST_FORECAST_YEAR', np.nan)
@@ -770,12 +770,13 @@ class DsaModel:
         Project nominal GDP.
         """
         # Project real growth and apply fiscal multiplier
-        if self.fiscal_multiplier_type == 'ec':
-            self._calc_rgdp_ec()
-        elif self.fiscal_multiplier_type == 'pers':
-            self._calc_rgdp_pers()
-        else :
-            raise ValueError('Fiscal multiplier type not recognized')
+        if self.fiscal_multiplier_type == 'recursive':
+            self._calc_rgdp_recursive()
+        elif self.fiscal_multiplier_type == 'impulse_response':
+            self._calc_rgdp_impulse_response()
+        else:
+            raise ValueError(f"Unknown fiscal_multiplier_type '{self.fiscal_multiplier_type}', "
+                             "use 'recursive' or 'impulse_response'.")
 
         # Apply adverse r-g scenario if specified
         if self.scenario == 'adverse_r_g':
@@ -784,9 +785,10 @@ class DsaModel:
         # Project nominal growth
         self._calc_ngdp()
 
-    def _calc_rgdp_pers(self):
+    def _calc_rgdp_impulse_response(self):
         """
-        Calculates real GDP and real growth, assumes persistence in fiscal_multiplier effect leading to output gap closing in 3 years
+        Calculates real GDP and real growth with the impulse-response output gap rule: the effect of each SPB change
+        fades linearly over fiscal_multiplier_persistence years (three by default), regardless of later SPB changes.
         """
         for t in range(1, self.projection_period):
             # Fiscal multiplier effect from change in SPB relative to baseline
@@ -813,9 +815,9 @@ class DsaModel:
             self.rgdp[t] = (self.output_gap[t] / 100 + 1) * self.rgdp_pot[t]
             self.rg[t] = (self.rgdp[t] - self.rgdp[t - 1]) / self.rgdp[t - 1] * 100
 
-    def _calc_rgdp_ec(self):
+    def _calc_rgdp_recursive(self):
         """
-        Calculates real GDP and real growth following the Commission methodology. In the year of an SPB change,
+        Calculates real GDP and real growth with the Commission's recursive output gap rule. In the year of an SPB change,
         the fiscal multiplier effect lowers growth relative to baseline. The resulting output gap closes with the
         2/3 and 1/3 rule over the following years (fiscal_multiplier_persistence = 3), during which new SPB changes
         add further effects. Without SPB changes, growth follows the baseline. In forecast years, only the deviation

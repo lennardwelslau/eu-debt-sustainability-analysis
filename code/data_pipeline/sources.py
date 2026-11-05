@@ -10,7 +10,8 @@
 #   ESM              RepaymentData.csv         ESM/EFSF loan repayment schedules
 #   Ageing Report    2024 statistical annex    ageing costs, long-term potential growth
 #   DSM              country fiches            stock-flow exceptions, taxes and property income
-#   OGWG             user-supplied file        real and potential GDP to T+5 (optional)
+#   OGWG             user-supplied file        EUCAM T+10 projections of real and potential GDP (latest file in
+#                                              data/RawData/ogwg, e.g. 'T+10_2026_SPRING_F - potential output data.xlsx')
 #   Bloomberg        user-supplied file        forward rates and inflation swaps for the T+10 anchors (optional,
 #                                              data/RawData/market/bloomberg_market_expectations_<yyyy_mm>.csv)
 #
@@ -32,11 +33,20 @@ from .maturity import lt_maturing_share
 HEADERS = {'User-Agent': 'Mozilla/5.0 (DSA data pipeline)'}
 REFERENCE_DIR = RAW_DIR / 'reference'
 MARKET_DIR = RAW_DIR / 'market'
+OGWG_DIR = RAW_DIR / 'ogwg'
 
 REFERENCE_FILES = {
     'awg': ('AWG2024_horizontal_tables.xlsx',
             'https://economy-finance.ec.europa.eu/document/download/403cc04f-9487-406b-a48a-22538e0d461c_en'
             '?filename=2024_Ageing_Report-Statistical_annex_all_horizontal_tables.xlsx'),
+    'awg2015': ('AWG2015_cross_country_tables.xlsx',
+                'http://ec.europa.eu/economy_finance/publications/european_economy/2015/pdf/ar2015-main-outputs-dat-fwk_en.xlsx'),
+    'awg2018': ('AWG2018_cross_country_tables.xlsx',
+                'https://economy-finance.ec.europa.eu/document/download/9d746300-65ca-4a7f-b1fd-523989a42ef5_en'
+                '?filename=cross_country_tables.xlsx'),
+    'awg2021': ('AWG2021_cross_country_tables.xlsx',
+                'https://economy-finance.ec.europa.eu/document/download/6be7a4fe-3aee-41c4-a126-77d8c7c503f4_en'
+                '?filename=new_cross_country_tables_ar2021.xlsx'),
     'dsm': ('DSM2025_country_fiches.xlsx',
             'https://economy-finance.ec.europa.eu/document/download/19852ffb-d8c5-4d47-a402-aa6179dc8051_en'
             '?filename=DSM%202025%20country%20fiches%20tables%20and%20graphs.xlsx'),
@@ -352,9 +362,30 @@ def read_market_expectations(path, countries):
     return df, f'{match.group(1)}-{match.group(2)}' if match else str(path)
 
 
+def latest_ogwg_file():
+    """
+    Most recent Output Gaps Working Group (EUCAM T+10) file in data/RawData/ogwg, None if there is none. Files are
+    named as distributed on CIRCABC, e.g. 'T+10_2026_SPRING_F - potential output data.xlsx'; they are ordered by year
+    and season (spring before autumn).
+    """
+    def vintage(path):
+        m = re.search(r'(\d{4})_(SPRING|AUTUMN)', path.name.upper())
+        return (int(m.group(1)), m.group(2) == 'AUTUMN') if m else (0, False)
+    files = sorted((f for f in OGWG_DIR.glob('*.xls*') if vintage(f)[0]), key=vintage)
+    return files[-1] if files else None
+
+
+def ogwg_vintage(path):
+    """
+    Vintage label of an OGWG file from its name, e.g. 'spring 2026'.
+    """
+    m = re.search(r'(\d{4})_(SPRING|AUTUMN)', str(path).upper())
+    return f'{m.group(2).lower()} {m.group(1)}' if m else str(path)
+
+
 def read_ogwg(path, countries):
     """
-    Read a user-supplied Output Gaps Working Group file with sheets 'Real GDP' and 'Pot_GDP'
+    Read a user-supplied Output Gaps Working Group file (EUCAM T+10 projections) with sheets 'Real GDP' and 'Pot_GDP'
     (years in rows, Commission country codes in columns, as distributed by the OGWG).
     Returns {'REAL_GDP': DataFrame, 'POTENTIAL_GDP': DataFrame} (year x ISO3).
     """
